@@ -1,31 +1,86 @@
-# ESP32_CAM_WEB_PAGE
+# Swarmclaw Sub Agent (ESP32-S3 Camera + BLE + HTTP)
 
-This is a simple project to show how to use the ESP32-CAM module to create a web page that shows the camera image.
+This project runs on ESP32-S3 and provides:
 
-## Requirements
-module: ESP32S3 + OV2640 camera module
+- Wi-Fi station connection
+- OV2640 camera capture and streaming HTTP APIs
+- BTHome BLE passive listener (temperature, humidity, battery)
 
-IDE: ESP-IDF
+The firmware initializes camera and BLE scanner, joins Wi-Fi, then starts an HTTP server after getting an IP address.
 
-## How to use
-1. Clone this repository
-2. Open the project in the ESP-IDF
-3. Configure the serial port
-4. Build and flash the project
-5. Open the serial monitor
-6. Copy the IP address that appears in the serial monitor
-7. Open a web browser and paste the IP address
-8. Enjoy the camera image
+## Hardware and Software
 
-## Example Image
-![Example Image](/image/capture.jpg)
+- Board: ESP32-S3
+- Camera: OV2640
+- Framework: ESP-IDF
 
-## Camera Parameters
-- Aperture: F2.0
-- Focal Length: 2.8mm
-- Resolution: 1600x1200
-- Sensor Size: 1/4 inch
-- Mount Type: M12
-- Field of View: 78 degrees
-- Focus Type: Fixed
-- Image Format: JPEG    
+## Quick Start
+
+1. Clone the repository.
+2. Create secrets file from template:
+
+```bash
+cp main/secrets.h.example main/secrets.h
+```
+
+3. Edit `main/secrets.h` and set:
+	- `WIFI_SSID`
+	- `WIFI_PASS`
+	- `CAM_API_TOKEN` (optional, can be empty)
+4. Build and flash:
+
+```bash
+idf.py set-target esp32s3
+idf.py build flash monitor
+```
+
+5. In serial logs, find `Got IP: x.x.x.x`.
+6. Open APIs from browser or curl.
+
+## HTTP APIs
+
+Base URL:
+
+```text
+http://<device_ip>
+```
+
+Routes:
+
+- `GET /stream`: MJPEG live stream
+- `GET /capture`: capture latest frame (JPEG)
+- `GET /snapshot`: return cached last `/capture` image
+- `GET /capture_human`: high-resolution still capture
+
+## Authentication
+
+If `CAM_API_TOKEN` is non-empty, requests must include either:
+
+- Header: `Authorization: Bearer <token>`
+- Query: `?token=<token>`
+
+If `CAM_API_TOKEN` is empty, authentication is disabled.
+
+Examples:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://<device_ip>/capture -o capture.jpg
+curl "http://<device_ip>/stream?token=<token>"
+```
+
+## BLE BTHome Listener
+
+The firmware starts a NimBLE scanner for BTHome advertisements (UUID `0xFCD2`) and parses:
+
+- Temperature
+- Humidity
+- Battery
+
+Current target MAC address is configured in `main/main.c` in `bthome_listener_start("a4:c1:38:a0:0d:98")`.
+Set empty string or `NULL` if you want to disable target filtering.
+
+## Notes
+
+- `main/secrets.h` is ignored by git and should never be committed.
+- Camera pin mapping and quality/frame-size settings are in `main/camera_core/config.h`.
+- Default stream frame size is VGA, while `/capture_human` uses UXGA.
