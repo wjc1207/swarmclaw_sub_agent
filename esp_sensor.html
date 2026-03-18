@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>ESP32 Camera</title>
+  <style>
+    body {
+      font-family: Arial;
+      background: #111;
+      color: #eee;
+      padding: 20px;
+      margin: 0;
+    }
+    .container {
+      display: flex;
+      gap: 20px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .left-panel {
+      flex: 3;
+      text-align: center;
+      min-width: 300px;
+    }
+    .right-panel {
+      flex: 1;
+      text-align: center;
+      min-width: 300px;
+    }
+    img {
+      width: 75%;
+      max-width: 75%;
+      border-radius: 10px;
+      margin-top: 20px;
+    }
+    button {
+      margin: 10px;
+      padding: 10px 20px;
+      font-size: 16px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+    }
+    .btn_capture { background: #4CAF50; color: white; }
+    .btn_download { background: #2196F3; color: white; }
+    .thome-panel {
+      margin: 20px 0;
+      background: #1b1b1b;
+      border-radius: 10px;
+      padding: 14px;
+      text-align: left;
+      border: 1px solid #2c2c2c;
+    }
+    .thome-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid #2a2a2a;
+    }
+    .thome-row:last-child {
+      border-bottom: none;
+    }
+    .thome-key {
+      color: #9aa0a6;
+    }
+    .thome-val {
+      color: #f1f3f4;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <div class="left-panel">
+    <h2>📷 ESP32 Camera</h2>
+    <img id="cam" src="" />
+    <br>
+    <button class="btn_capture" onclick="capture()">📸 Capture</button>
+    <button class="btn_download" onclick="download()">💾 Download</button>
+  </div>
+
+  <div class="right-panel">
+    <div style = "max-width: 80%;">
+      <h2>📹 ESP32 Thome</h2>
+      <div class="thome-panel">
+      <div class="thome-row"><span class="thome-key">Status</span><span class="thome-val" id="th_status">loading</span></div>
+      <div class="thome-row"><span class="thome-key">Source</span><span class="thome-val" id="th_source">-</span></div>
+      <div class="thome-row"><span class="thome-key">Temperature</span><span class="thome-val" id="th_temp">-</span></div>
+      <div class="thome-row"><span class="thome-key">Humidity</span><span class="thome-val" id="th_hum">-</span></div>
+      <div class="thome-row"><span class="thome-key">Battery</span><span class="thome-val" id="th_bat">-</span></div>
+      <div class="thome-row"><span class="thome-key">Encrypted</span><span class="thome-val" id="th_enc">-</span></div>
+      <div class="thome-row"><span class="thome-key">Last Seen (ms)</span><span class="thome-val" id="th_seen">-</span></div>
+      <div class="thome-row"><span class="thome-key">Updated At</span><span class="thome-val" id="th_updated">-</span></div>
+      </div>
+  </div>
+</div>
+
+
+
+<script>
+let currentBlobUrl = null;
+let streaming = false;
+let interval = null;
+
+// 单次拍照（关键：用 blob 固定帧）
+async function capture() {
+  const res = await fetch('http://192.168.3.44/capture');
+  const blob = await res.blob();
+
+  // 释放旧 URL
+  if (currentBlobUrl) {
+    URL.revokeObjectURL(currentBlobUrl);
+  }
+
+  currentBlobUrl = URL.createObjectURL(blob);
+  document.getElementById('cam').src = currentBlobUrl;
+}
+
+// 下载当前帧（不会触发新请求）
+function download() {
+  if (!currentBlobUrl) return;
+
+  const a = document.createElement('a');
+  a.href = currentBlobUrl;
+  a.download = 'capture.jpg';
+  a.click();
+}
+
+function getThome() {
+  return fetch('http://192.168.3.44/get_thome')
+    .then(res => {
+      if (!res.ok) {
+        throw new Error('HTTP ' + res.status);
+      }
+      return res.json();
+    })
+    .then(data => {
+      const statusEl = document.getElementById('th_status');
+      const sourceEl = document.getElementById('th_source');
+      const tempEl = document.getElementById('th_temp');
+      const humEl = document.getElementById('th_hum');
+      const batEl = document.getElementById('th_bat');
+      const encEl = document.getElementById('th_enc');
+      const seenEl = document.getElementById('th_seen');
+      const updatedEl = document.getElementById('th_updated');
+
+      if (!data || data.status !== 'ok') {
+        statusEl.textContent = data && data.status ? data.status : 'no_data';
+        sourceEl.textContent = '-';
+        tempEl.textContent = '-';
+        humEl.textContent = '-';
+        batEl.textContent = '-';
+        encEl.textContent = '-';
+        seenEl.textContent = '-';
+        updatedEl.textContent = new Date().toLocaleTimeString();
+        return;
+      }
+
+      statusEl.textContent = data.status;
+      sourceEl.textContent = data.source_addr || '-';
+      tempEl.textContent = data.temperature_valid ? (Number(data.temperature).toFixed(2) + ' C') : 'N/A';
+      humEl.textContent = data.humidity_valid ? (Number(data.humidity).toFixed(2) + ' %') : 'N/A';
+      batEl.textContent = data.battery_valid ? (String(data.battery) + ' %') : 'N/A';
+      encEl.textContent = data.encrypted ? 'true' : 'false';
+      seenEl.textContent = typeof data.last_seen_ms === 'number' ? String(data.last_seen_ms) : '-';
+      updatedEl.textContent = new Date().toLocaleTimeString();
+    })
+    .catch(err => {
+      document.getElementById('th_status').textContent = 'error';
+      document.getElementById('th_updated').textContent = new Date().toLocaleTimeString();
+      console.error('get_thome failed:', err);
+    });
+}
+
+// 页面加载自动拍一张
+capture();
+getThome();
+setInterval(getThome, 3000);
+</script>
+
+</body>
+</html>

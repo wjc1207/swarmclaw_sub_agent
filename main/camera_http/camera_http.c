@@ -1,5 +1,6 @@
 #include "camera_http.h"
 
+#include <inttypes.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -14,6 +15,9 @@
 
 #include "secrets.h"
 #include "camera_core.h"
+#include "bthome_listener.h"
+
+#include "esp_timer.h"
 
 static const char *TAG = "camera_sta";
 static uint8_t *s_last_capture_jpg = NULL;
@@ -59,6 +63,7 @@ static esp_err_t stream_handler(httpd_req_t *req)
     static const char *_STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
     httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     httpd_resp_set_hdr(req, "Pragma", "no-cache");
     httpd_resp_set_hdr(req, "Expires", "0");
@@ -142,6 +147,7 @@ static esp_err_t capture_handler(httpd_req_t *req)
     }
 
     httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     httpd_resp_set_hdr(req, "Pragma", "no-cache");
@@ -185,6 +191,7 @@ static esp_err_t snapshot_handler(httpd_req_t *req)
     }
 
     httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=snapshot.jpg");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     httpd_resp_set_hdr(req, "Pragma", "no-cache");
@@ -212,6 +219,7 @@ static esp_err_t capture_human_handler(httpd_req_t *req)
     }
 
     httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture_human.jpg");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     httpd_resp_set_hdr(req, "Pragma", "no-cache");
@@ -220,6 +228,52 @@ static esp_err_t capture_human_handler(httpd_req_t *req)
     esp_err_t res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
     camera_core_release_fb_human(fb);
     return res;
+}
+
+static esp_err_t get_thome_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer realm=\"camera\"");
+        httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    thome_reading_t reading = {0};
+    bool has = bthome_listener_get_latest(&reading);
+
+    uint32_t now_ms = esp_timer_get_time() / 1000;
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
+
+    if (!has) {
+        return httpd_resp_sendstr(req, "{\"ok\":true,\"status\":\"no_data\"}");
+    }
+
+    char body[384];
+    snprintf(body, sizeof(body),
+             "{\"ok\":true,\"status\":\"ok\","
+             "\"source_addr\":\"%s\","
+             "\"last_seen_ms\":%" PRIu32 ","
+             "\"encrypted\":%s,"
+             "\"temperature\":%0.2f,\"temperature_valid\":%s,"
+             "\"humidity\":%0.2f,\"humidity_valid\":%s,"
+             "\"battery\":%d,\"battery_valid\":%s}",
+             reading.source_addr,
+             now_ms - reading.last_seen_ms,
+             reading.encrypted ? "true" : "false",
+             reading.temperature_c,
+             reading.temperature_valid ? "true" : "false",
+             reading.humidity_percent,
+             reading.humidity_valid ? "true" : "false",
+             reading.battery_percent,
+             reading.battery_valid ? "true" : "false");
+
+    return httpd_resp_sendstr(req, body);
 }
 
 void camera_http_start_server(void)
@@ -260,5 +314,13 @@ void camera_http_start_server(void)
             .user_ctx = NULL,
         };
         httpd_register_uri_handler(server, &capture_human_uri);
+
+        httpd_uri_t get_thome_uri = {
+            .uri = "/get_thome",
+            .method = HTTP_GET,
+            .handler = get_thome_handler,
+            .user_ctx = NULL,
+        };
+        httpd_register_uri_handler(server, &get_thome_uri);
     }
 }

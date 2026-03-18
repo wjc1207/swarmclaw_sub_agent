@@ -12,6 +12,10 @@ The firmware initializes camera and BLE scanner, joins Wi-Fi, then starts an HTT
 
 - Board: ESP32-S3
 - Camera: OV2640
+- BLE: Xiaomi Mijia Bluetooth Temperature and Humidity Sensor (LYWSD03MMC)
+- need BLE OTA firmware update to BTHome broadcast 
+- https://pvvx.github.io/ATC_MiThermometer/TelinkMiFlasher.html
+- Wi-Fi: Connects to configured SSID on boot
 - Framework: ESP-IDF
 
 ## Quick Start
