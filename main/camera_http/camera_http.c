@@ -16,6 +16,8 @@
 #include "camera_core.h"
 
 static const char *TAG = "camera_sta";
+static uint8_t *s_last_capture_jpg = NULL;
+static size_t s_last_capture_jpg_len = 0;
 
 static bool check_auth(httpd_req_t *req)
 {
@@ -147,12 +149,48 @@ static esp_err_t capture_handler(httpd_req_t *req)
 
     esp_err_t res = httpd_resp_send(req, (const char *)jpg_buf, jpg_len);
 
+    if (res == ESP_OK && jpg_len > 0) {
+        uint8_t *copy = (uint8_t *)malloc(jpg_len);
+        if (copy != NULL) {
+            memcpy(copy, jpg_buf, jpg_len);
+            free(s_last_capture_jpg);
+            s_last_capture_jpg = copy;
+            s_last_capture_jpg_len = jpg_len;
+        } else {
+            ESP_LOGW(TAG, "No memory to update snapshot cache");
+        }
+    }
+
     if (fb->format != PIXFORMAT_JPEG) {
         free(jpg_buf);
     }
     camera_core_release_fb(fb);
 
     return res;
+}
+
+static esp_err_t snapshot_handler(httpd_req_t *req)
+{
+    if (!check_auth(req)) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer realm=\"camera\"");
+        httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    if (s_last_capture_jpg == NULL || s_last_capture_jpg_len == 0) {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_send(req, "No snapshot yet", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=snapshot.jpg");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
+
+    return httpd_resp_send(req, (const char *)s_last_capture_jpg, s_last_capture_jpg_len);
 }
 
 static esp_err_t capture_human_handler(httpd_req_t *req)
@@ -206,6 +244,14 @@ void camera_http_start_server(void)
             .user_ctx = NULL,
         };
         httpd_register_uri_handler(server, &capture_uri);
+
+        httpd_uri_t snapshot_uri = {
+            .uri = "/snapshot",
+            .method = HTTP_GET,
+            .handler = snapshot_handler,
+            .user_ctx = NULL,
+        };
+        httpd_register_uri_handler(server, &snapshot_uri);
 
         httpd_uri_t capture_human_uri = {
             .uri = "/capture_human",

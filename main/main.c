@@ -5,6 +5,7 @@
 #include "esp_psram.h"
 
 #include "camera_core.h"
+#include "bthome_listener.h"
 #include "wifi_sta.h"
 
 static const char *TAG = "camera_sta";
@@ -20,6 +21,11 @@ void app_main(void)
     if (ESP_OK != camera_core_init()) {
         ESP_LOGE(TAG, "Camera init failed");
         return;
+    }
+
+    esp_err_t ble_ret = bthome_listener_start("a4:c1:38:a0:0d:98");
+    if (ble_ret != ESP_OK) {
+        ESP_LOGW(TAG, "BTHome listener start failed: 0x%x", (unsigned int)ble_ret);
     }
 
     wifi_init_sta();

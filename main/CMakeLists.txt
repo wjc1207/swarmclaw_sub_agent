@@ -1,9 +1,11 @@
 idf_component_register(
     SRCS "main.c"
+        "ble/bthome_listener.c"
         "camera_core/camera_core.c"
         "camera_http/camera_http.c"
         "wifi_sta/wifi_sta.c"
     INCLUDE_DIRS "."
+              "ble"
               "camera_core"
               "camera_http"
               "wifi_sta"
@@ -15,4 +17,5 @@ idf_component_register(
         esp_http_server
         esp_psram
         esp32-camera
+        bt
 )
