@@ -175,31 +175,6 @@ static esp_err_t capture_handler(httpd_req_t *req)
     return res;
 }
 
-static esp_err_t snapshot_handler(httpd_req_t *req)
-{
-    if (!check_auth(req)) {
-        httpd_resp_set_status(req, "401 Unauthorized");
-        httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer realm=\"camera\"");
-        httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
-        return ESP_FAIL;
-    }
-
-    if (s_last_capture_jpg == NULL || s_last_capture_jpg_len == 0) {
-        httpd_resp_set_status(req, "404 Not Found");
-        httpd_resp_send(req, "No snapshot yet", HTTPD_RESP_USE_STRLEN);
-        return ESP_FAIL;
-    }
-
-    httpd_resp_set_type(req, "image/jpeg");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=snapshot.jpg");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-    httpd_resp_set_hdr(req, "Pragma", "no-cache");
-    httpd_resp_set_hdr(req, "Expires", "0");
-
-    return httpd_resp_send(req, (const char *)s_last_capture_jpg, s_last_capture_jpg_len);
-}
-
 static esp_err_t capture_human_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) {
@@ -276,6 +251,36 @@ static esp_err_t get_thome_handler(httpd_req_t *req)
     return httpd_resp_sendstr(req, body);
 }
 
+static esp_err_t agent_well_known_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
+
+    static const char *body =
+        "{"
+        "\"schema_version\":\"a2a-sim-1\","
+        "\"id\":\"swarmclaw-sub-agent\","
+        "\"name\":\"SwarmClaw Sub Agent\","
+        "\"description\":\"ESP32 camera and BTHome edge agent for A2A simulation\","
+        "\"endpoints\":{"
+            "\"stream\":\"/stream\"," 
+            "\"capture\":\"/capture\"," 
+            "\"capture_human\":\"/capture_human\"," 
+            "\"get_thome\":\"/get_thome\""
+        "},"
+        "\"auth\":{"
+            "\"type\":\"bearer_or_query_token\","
+            "\"header\":\"Authorization: Bearer <token>\","
+            "\"query\":\"token=<token>\""
+        "}"
+        "}";
+
+    return httpd_resp_sendstr(req, body);
+}
+
 void camera_http_start_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -299,14 +304,6 @@ void camera_http_start_server(void)
         };
         httpd_register_uri_handler(server, &capture_uri);
 
-        httpd_uri_t snapshot_uri = {
-            .uri = "/snapshot",
-            .method = HTTP_GET,
-            .handler = snapshot_handler,
-            .user_ctx = NULL,
-        };
-        httpd_register_uri_handler(server, &snapshot_uri);
-
         httpd_uri_t capture_human_uri = {
             .uri = "/capture_human",
             .method = HTTP_GET,
@@ -322,5 +319,22 @@ void camera_http_start_server(void)
             .user_ctx = NULL,
         };
         httpd_register_uri_handler(server, &get_thome_uri);
+
+        httpd_uri_t well_known_agent_card_uri = {
+            .uri = "/.well-known/agent-card.json",
+            .method = HTTP_GET,
+            .handler = agent_well_known_handler,
+            .user_ctx = NULL,
+        };
+        httpd_register_uri_handler(server, &well_known_agent_card_uri);
+
+        // compatibility with simple version 
+        httpd_uri_t well_known_agent_uri = {
+            .uri = "/.well-known/agent.json",
+            .method = HTTP_GET,
+            .handler = agent_well_known_handler,
+            .user_ctx = NULL,
+        };
+        httpd_register_uri_handler(server, &well_known_agent_uri);
     }
 }
