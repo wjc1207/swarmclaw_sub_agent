@@ -55,6 +55,85 @@ Routes:
 - `GET /capture`: capture latest frame (JPEG)
 - `GET /snapshot`: return cached last `/capture` image
 - `GET /capture_human`: high-resolution still capture
+- `GET /get_thome`: latest BLE BTHome reading as JSON
+- `POST /message/send`: A2A-style JSON-RPC 2.0 message endpoint (LLM + tools)
+
+## A2A Server (JSON-RPC 2.0)
+
+This firmware exposes a lightweight A2A-compatible server surface:
+
+- Discovery:
+	- `GET /.well-known/agent.json`
+	- `GET /.well-known/agent-card.json`
+- Message endpoint:
+	- `POST /message/send`
+
+The `/message/send` endpoint accepts JSON-RPC 2.0 requests and returns JSON-RPC 2.0 responses.
+Internally it calls a cloud LLM and allows tool calls for:
+
+- `tool_ble`: read latest BTHome sensor data
+- `tool_camera`: read camera endpoint/status info
+
+### Request Example
+
+```json
+{
+	"jsonrpc": "2.0",
+	"id": "req-1",
+	"method": "message/send",
+	"params": {
+		"message": {
+			"parts": [
+				{ "type": "text", "text": "What is the latest temperature?" }
+			]
+		}
+	}
+}
+```
+
+### Success Response Example
+
+```json
+{
+	"jsonrpc": "2.0",
+	"id": "req-1",
+	"result": {
+		"message": {
+			"role": "assistant",
+			"parts": [
+				{ "type": "text", "text": "Latest temperature is 25.31 C." }
+			]
+		}
+	}
+}
+```
+
+### Error Response Example
+
+```json
+{
+	"jsonrpc": "2.0",
+	"id": "req-1",
+	"error": {
+		"code": -32602,
+		"message": "Invalid params",
+		"data": "message text is required"
+	}
+}
+```
+
+### cURL Example
+
+```bash
+curl -X POST "http://<device_ip>/message/send?token=<token>" \
+	-H "Content-Type: application/json" \
+	-d '{
+		"jsonrpc":"2.0",
+		"id":"req-1",
+		"method":"message/send",
+		"params":{"text":"Summarize current BLE status"}
+	}'
+```
 
 ## Authentication
 
