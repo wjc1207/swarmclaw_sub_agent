@@ -17,16 +17,27 @@
 #include "secrets.h"
 #include "camera_core.h"
 #include "bthome_listener.h"
+#include "a2a/a2a_rpc.h"
+#include "a2a/task_store.h"
 #include "llm/llm_chat.h"
+#include "tools/a2a_tools.h"
 
 #include "esp_timer.h"
 
 static const char *TAG = "camera_sta";
 static uint8_t *s_last_capture_jpg = NULL;
 static size_t s_last_capture_jpg_len = 0;
+static SemaphoreHandle_t s_task_executor_running = NULL;
 
 #define MSG_REQ_MAX_BYTES   4096
 #define MSG_RESP_MAX_BYTES  2048
+
+typedef enum {
+    TASK_TYPE_LLM = 0,
+    TASK_TYPE_CAPTURE,
+    TASK_TYPE_BLE_THEMO,
+    TASK_TYPE_IMAGE_FFT,
+} task_type_t;
 
 static bool check_auth(httpd_req_t *req)
 {
@@ -52,6 +63,125 @@ static bool check_auth(httpd_req_t *req)
     }
 
     return false;
+}
+
+static void task_executor_thread(void *arg)
+{
+    (void)arg;
+    while (true) {
+        // Find next queued task
+        const a2a_task_t *task = a2a_task_find_next_queued();
+        if (!task) {
+            // No queued tasks, sleep briefly
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        // Copy task ID and tool name (to avoid dangling pointers)
+        char task_id[40];
+        char tool_name[64];
+        strlcpy(task_id, task->id, sizeof(task_id));
+        strlcpy(tool_name, task->tool_name, sizeof(tool_name));
+
+        ESP_LOGI(TAG, "Executing async task %s with tool %s", task_id, tool_name);
+
+        // Mark task as running
+        a2a_task_update(task_id, A2A_TASK_STATE_RUNNING, NULL);
+
+        // Execute async task by task type/tool name
+        char *result = (char *)calloc(1, 2048);
+        if (!result) {
+            a2a_task_update(task_id, A2A_TASK_STATE_FAILED, "{\"ok\":false,\"error\":\"oom\"}");
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+
+        esp_err_t exec_ret = ESP_ERR_NOT_FOUND;
+        if (strcmp(tool_name, "tool_image_fft") == 0 ||
+            strcmp(tool_name, "tool_ble") == 0 ||
+            strcmp(tool_name, "tool_camera") == 0) {
+            exec_ret = a2a_tools_execute(tool_name, result, 2048);
+        } else if (strcmp(tool_name, "llm_message") == 0) {
+            exec_ret = llm_chat_with_tools(task->input, result, 2048);
+        } else {
+            snprintf(result, 2048, "{\"ok\":false,\"error\":\"unknown_task_type\",\"tool\":\"%s\"}", tool_name);
+        }
+
+        // Mark task as completed or failed
+        const char *final_state = (exec_ret == ESP_OK) ? A2A_TASK_STATE_COMPLETED : A2A_TASK_STATE_FAILED;
+        a2a_task_update(task_id, final_state, result);
+        free(result);
+
+        ESP_LOGI(TAG, "Async task %s completed with state %s", task_id, final_state);
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+static task_type_t a2a_extract_task_type(cJSON *params, const char *msg_text)
+{
+    cJSON *task_type_obj = params ? cJSON_GetObjectItem(params, "taskType") : NULL;
+    if (cJSON_IsString(task_type_obj) && task_type_obj->valuestring) {
+        const char *t = task_type_obj->valuestring;
+        if (strcmp(t, "image_fft") == 0) {
+            return TASK_TYPE_IMAGE_FFT;
+        }
+        if (strcmp(t, "capture") == 0) {
+            return TASK_TYPE_CAPTURE;
+        }
+        if (strcmp(t, "ble_themo") == 0 || strcmp(t, "ble_thermo") == 0) {
+            return TASK_TYPE_BLE_THEMO;
+        }
+        if (strcmp(t, "llm") == 0) {
+            return TASK_TYPE_LLM;
+        }
+    }
+
+    if (!msg_text) {
+        return TASK_TYPE_LLM;
+    }
+
+    if (strstr(msg_text, "image_fft") || strstr(msg_text, "fft") || strstr(msg_text, "FFT")) {
+        return TASK_TYPE_IMAGE_FFT;
+    }
+    if (strstr(msg_text, "ble_themo") || strstr(msg_text, "ble_thermo") || strstr(msg_text, "ble thermo")) {
+        return TASK_TYPE_BLE_THEMO;
+    }
+    if (strstr(msg_text, "capture") || strstr(msg_text, "拍照")) {
+        return TASK_TYPE_CAPTURE;
+    }
+
+    return TASK_TYPE_LLM;
+}
+
+static const char *task_type_to_name(task_type_t task_type)
+{
+    switch (task_type) {
+        case TASK_TYPE_CAPTURE:
+            return "capture";
+        case TASK_TYPE_BLE_THEMO:
+            return "ble_themo";
+        case TASK_TYPE_IMAGE_FFT:
+            return "image_fft";
+        case TASK_TYPE_LLM:
+        default:
+            return "llm";
+    }
+}
+
+static const char *task_type_to_tool(task_type_t task_type)
+{
+    switch (task_type) {
+        case TASK_TYPE_CAPTURE:
+            return "tool_camera";
+        case TASK_TYPE_BLE_THEMO:
+            return "tool_ble";
+        case TASK_TYPE_IMAGE_FFT:
+            return "tool_image_fft";
+        case TASK_TYPE_LLM:
+        default:
+            return "llm_message";
+    }
 }
 
 static esp_err_t stream_handler(httpd_req_t *req)
@@ -268,8 +398,7 @@ static esp_err_t message_send_handler(httpd_req_t *req)
     if (req->content_len <= 0 || req->content_len > MSG_REQ_MAX_BYTES) {
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        return httpd_resp_sendstr(req,
-            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"Invalid Request\",\"data\":\"invalid_body_length\"}}");
+        return httpd_resp_sendstr(req, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"Invalid Request\",\"data\":\"invalid_body_length\"}}");
     }
 
     char *payload = (char *)calloc(1, req->content_len + 1);
@@ -293,181 +422,165 @@ static esp_err_t message_send_handler(httpd_req_t *req)
         received += ret;
     }
 
-    cJSON *root = cJSON_Parse(payload);
-    if (!root || !cJSON_IsObject(root)) {
-        cJSON_Delete(root);
+    cJSON *root = NULL;
+    cJSON *id = NULL;
+    const char *method = NULL;
+    cJSON *params = NULL;
+    char *parse_error_json = NULL;
+    if (!a2a_parse_rpc_request(payload, &root, &id, &method, &params, &parse_error_json)) {
         free(payload);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        return httpd_resp_sendstr(req,
-            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\",\"data\":\"invalid_json\"}}");
-    }
-
-    cJSON *id = cJSON_GetObjectItem(root, "id");
-    cJSON *jsonrpc = cJSON_GetObjectItem(root, "jsonrpc");
-    cJSON *method = cJSON_GetObjectItem(root, "method");
-    cJSON *params = cJSON_GetObjectItem(root, "params");
-
-    if (!cJSON_IsString(jsonrpc) || strcmp(jsonrpc->valuestring, "2.0") != 0) {
-        cJSON *err_resp = cJSON_CreateObject();
-        cJSON *err_obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(err_resp, "jsonrpc", "2.0");
-        cJSON_AddItemToObject(err_resp, "id", id ? cJSON_Duplicate(id, 1) : cJSON_CreateNull());
-        cJSON_AddNumberToObject(err_obj, "code", -32600);
-        cJSON_AddStringToObject(err_obj, "message", "Invalid Request");
-        cJSON_AddStringToObject(err_obj, "data", "jsonrpc must be 2.0");
-        cJSON_AddItemToObject(err_resp, "error", err_obj);
-        char *resp_str = cJSON_PrintUnformatted(err_resp);
-        cJSON_Delete(err_resp);
-        cJSON_Delete(root);
-        free(payload);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        if (!resp_str) {
+        if (!parse_error_json) {
+            parse_error_json = a2a_build_jsonrpc_error(NULL, -32603, "Internal error", "oom");
+        }
+        if (!parse_error_json) {
             return httpd_resp_sendstr(req,
                 "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
         }
-        esp_err_t ret = httpd_resp_sendstr(req, resp_str);
-        free(resp_str);
+        esp_err_t ret = httpd_resp_sendstr(req, parse_error_json);
+        free(parse_error_json);
         return ret;
     }
 
-    if (!cJSON_IsString(method) || strcmp(method->valuestring, "message/send") != 0) {
-        cJSON *err_resp = cJSON_CreateObject();
-        cJSON *err_obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(err_resp, "jsonrpc", "2.0");
-        cJSON_AddItemToObject(err_resp, "id", id ? cJSON_Duplicate(id, 1) : cJSON_CreateNull());
-        cJSON_AddNumberToObject(err_obj, "code", -32601);
-        cJSON_AddStringToObject(err_obj, "message", "Method not found");
-        cJSON_AddStringToObject(err_obj, "data", "expected method=message/send");
-        cJSON_AddItemToObject(err_resp, "error", err_obj);
-        char *resp_str = cJSON_PrintUnformatted(err_resp);
-        cJSON_Delete(err_resp);
-        cJSON_Delete(root);
-        free(payload);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        if (!resp_str) {
-            return httpd_resp_sendstr(req,
-                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
-        }
-        esp_err_t ret = httpd_resp_sendstr(req, resp_str);
-        free(resp_str);
-        return ret;
-    }
-
-    if (!params || !cJSON_IsObject(params)) {
-        cJSON *err_resp = cJSON_CreateObject();
-        cJSON *err_obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(err_resp, "jsonrpc", "2.0");
-        cJSON_AddItemToObject(err_resp, "id", id ? cJSON_Duplicate(id, 1) : cJSON_CreateNull());
-        cJSON_AddNumberToObject(err_obj, "code", -32602);
-        cJSON_AddStringToObject(err_obj, "message", "Invalid params");
-        cJSON_AddStringToObject(err_obj, "data", "params object is required");
-        cJSON_AddItemToObject(err_resp, "error", err_obj);
-        char *resp_str = cJSON_PrintUnformatted(err_resp);
-        cJSON_Delete(err_resp);
-        cJSON_Delete(root);
-        free(payload);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        if (!resp_str) {
-            return httpd_resp_sendstr(req,
-                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
-        }
-        esp_err_t ret = httpd_resp_sendstr(req, resp_str);
-        free(resp_str);
-        return ret;
-    }
-
-    cJSON *message = cJSON_GetObjectItem(params, "message");
-    cJSON *text = cJSON_GetObjectItem(params, "text");
-    const char *msg_text = NULL;
-    if (cJSON_IsString(message) && message->valuestring) {
-        msg_text = message->valuestring;
-    } else if (cJSON_IsObject(message)) {
-        cJSON *m_content = cJSON_GetObjectItem(message, "content");
-        cJSON *m_text = cJSON_GetObjectItem(message, "text");
-        cJSON *m_parts = cJSON_GetObjectItem(message, "parts");
-        if (cJSON_IsString(m_content) && m_content->valuestring) {
-            msg_text = m_content->valuestring;
-        } else if (cJSON_IsString(m_text) && m_text->valuestring) {
-            msg_text = m_text->valuestring;
-        } else if (cJSON_IsArray(m_parts) && cJSON_GetArraySize(m_parts) > 0) {
-            cJSON *part0 = cJSON_GetArrayItem(m_parts, 0);
-            cJSON *p_text = cJSON_IsObject(part0) ? cJSON_GetObjectItem(part0, "text") : NULL;
-            if (cJSON_IsString(p_text) && p_text->valuestring) {
-                msg_text = p_text->valuestring;
+    if (strcmp(method, "tasks/get") == 0) {
+        const char *task_id = a2a_extract_task_id(params);
+        if (!task_id || task_id[0] == '\0') {
+            char *err = a2a_build_jsonrpc_error(id, -32602, "Invalid params", "task id is required");
+            cJSON_Delete(root);
+            free(payload);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+            if (!err) {
+                return httpd_resp_sendstr(req,
+                    "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
             }
+            esp_err_t ret = httpd_resp_sendstr(req, err);
+            free(err);
+            return ret;
         }
-    } else if (cJSON_IsString(text) && text->valuestring) {
-        msg_text = text->valuestring;
-    }
 
-    if (!msg_text || msg_text[0] == '\0') {
-        cJSON *err_resp = cJSON_CreateObject();
-        cJSON *err_obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(err_resp, "jsonrpc", "2.0");
-        cJSON_AddItemToObject(err_resp, "id", id ? cJSON_Duplicate(id, 1) : cJSON_CreateNull());
-        cJSON_AddNumberToObject(err_obj, "code", -32602);
-        cJSON_AddStringToObject(err_obj, "message", "Invalid params");
-        cJSON_AddStringToObject(err_obj, "data", "message text is required");
-        cJSON_AddItemToObject(err_resp, "error", err_obj);
-        char *resp_str = cJSON_PrintUnformatted(err_resp);
-        cJSON_Delete(err_resp);
+        const a2a_task_t *task = a2a_task_get(task_id);
+        if (!task) {
+            char *err = a2a_build_jsonrpc_error(id, -32004, "Task not found", task_id);
+            cJSON_Delete(root);
+            free(payload);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+            if (!err) {
+                return httpd_resp_sendstr(req,
+                    "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+            }
+            esp_err_t ret = httpd_resp_sendstr(req, err);
+            free(err);
+            return ret;
+        }
+
+        char *resp_str = a2a_build_task_result(id, task);
         cJSON_Delete(root);
         free(payload);
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        httpd_resp_set_hdr(req, "Pragma", "no-cache");
+        httpd_resp_set_hdr(req, "Expires", "0");
         if (!resp_str) {
             return httpd_resp_sendstr(req,
-                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":\"oom\"}}");
         }
         esp_err_t ret = httpd_resp_sendstr(req, resp_str);
         free(resp_str);
         return ret;
     }
 
-    ESP_LOGI(TAG, "message/send received: %.80s%s",
+    if (strcmp(method, "message/send") != 0) {
+        char *err = a2a_build_jsonrpc_error(id, -32601, "Method not found", "supported: message/send, tasks/get");
+        cJSON_Delete(root);
+        free(payload);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        if (!err) {
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+        }
+        esp_err_t ret = httpd_resp_sendstr(req, err);
+        free(err);
+        return ret;
+    }
+
+    const char *msg_text = a2a_extract_message_text(params);
+    if (!msg_text || msg_text[0] == '\0') {
+        char *err = a2a_build_jsonrpc_error(id, -32602, "Invalid params", "message text is required");
+        cJSON_Delete(root);
+        free(payload);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        if (!err) {
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+        }
+        esp_err_t ret = httpd_resp_sendstr(req, err);
+        free(err);
+        return ret;
+    }
+
+    task_type_t task_type = a2a_extract_task_type(params, msg_text);
+    bool is_async = (task_type == TASK_TYPE_IMAGE_FFT);
+    const char *task_type_name = task_type_to_name(task_type);
+    const char *tool_name = task_type_to_tool(task_type);
+
+    ESP_LOGI(TAG, "message/send received type=%s mode=%s: %.80s%s",
+             task_type_name,
+             is_async ? "async" : "sync",
              msg_text,
              strlen(msg_text) > 80 ? "..." : "");
 
+    const a2a_task_t *task = NULL;
     char answer[MSG_RESP_MAX_BYTES] = {0};
-    esp_err_t llm_ret = llm_chat_with_tools(msg_text, answer, sizeof(answer));
 
-    cJSON *resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(resp, "jsonrpc", "2.0");
-    cJSON_AddItemToObject(resp, "id", id ? cJSON_Duplicate(id, 1) : cJSON_CreateNull());
-    if (llm_ret == ESP_OK) {
-        cJSON *result = cJSON_CreateObject();
-        cJSON *msg = cJSON_CreateObject();
-        cJSON *parts = cJSON_CreateArray();
-        cJSON *part = cJSON_CreateObject();
-        cJSON_AddStringToObject(msg, "role", "assistant");
-        cJSON_AddStringToObject(part, "type", "text");
-        cJSON_AddStringToObject(part, "text", answer);
-        cJSON_AddItemToArray(parts, part);
-        cJSON_AddItemToObject(msg, "parts", parts);
-        cJSON_AddItemToObject(result, "message", msg);
-        cJSON_AddItemToObject(resp, "result", result);
+    if (is_async) {
+        // image_fft is always async: enqueue and return task id immediately
+        task = a2a_task_create(msg_text, A2A_TASK_STATE_QUEUED, tool_name);
+        if (!task) {
+            char *err = a2a_build_jsonrpc_error(id, -32603, "Internal error", "task_create_failed");
+            cJSON_Delete(root);
+            free(payload);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+            if (!err) {
+                return httpd_resp_sendstr(req,
+                    "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+            }
+            esp_err_t ret = httpd_resp_sendstr(req, err);
+            free(err);
+            return ret;
+        }
     } else {
-        cJSON *err_obj = cJSON_CreateObject();
-        cJSON_AddNumberToObject(err_obj, "code", -32000);
-        cJSON_AddStringToObject(err_obj, "message", "LLM execution failed");
-        cJSON_AddStringToObject(err_obj, "data", answer);
-        cJSON_AddItemToObject(resp, "error", err_obj);
-    }
-    char *resp_str = cJSON_PrintUnformatted(resp);
-    cJSON_Delete(resp);
-    cJSON_Delete(root);
+        // capture / ble_themo / default llm are sync
+        esp_err_t exec_ret = ESP_OK;
+        if (task_type == TASK_TYPE_CAPTURE || task_type == TASK_TYPE_BLE_THEMO) {
+            exec_ret = a2a_tools_execute(tool_name, answer, sizeof(answer));
+        } else {
+            exec_ret = llm_chat_with_tools(msg_text, answer, sizeof(answer));
+        }
 
+        if (exec_ret != ESP_OK) {
+            snprintf(answer, sizeof(answer),
+                     "{\"ok\":false,\"error\":\"exec_failed\",\"task_type\":\"%s\",\"esp_err\":%d}",
+                     task_type_name, (int)exec_ret);
+        }
+        task = a2a_task_create_completed(msg_text, answer);
+    }
+
+    char *resp_str = a2a_build_task_result(id, task);
+    cJSON_Delete(root);
     free(payload);
 
     if (!resp_str) {
-        httpd_resp_set_status(req, "500 Internal Server Error");
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"oom\"}");
+        return httpd_resp_sendstr(req,
+            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":\"oom\"}}");
     }
 
     httpd_resp_set_type(req, "application/json");
@@ -478,6 +591,11 @@ static esp_err_t message_send_handler(httpd_req_t *req)
     esp_err_t send_ret = httpd_resp_sendstr(req, resp_str);
     free(resp_str);
     return send_ret;
+}
+
+static esp_err_t tasks_get_handler(httpd_req_t *req)
+{
+    return message_send_handler(req);
 }
 
 static esp_err_t agent_well_known_handler(httpd_req_t *req)
@@ -493,20 +611,22 @@ static esp_err_t agent_well_known_handler(httpd_req_t *req)
         "\"schema_version\":\"a2a-sim-1\","
         "\"id\":\"swarmclaw-sub-agent\","
         "\"name\":\"SwarmClaw Sub Agent\","
-        "\"description\":\"ESP32 camera and BTHome edge agent for A2A simulation\","
+        "\"description\":\"ESP32 camera and BTHome edge agent for A2A simulation with async task support\","
         "\"endpoints\":{"
             "\"stream\":\"/stream\"," 
             "\"capture\":\"/capture\"," 
             "\"capture_human\":\"/capture_human\"," 
             "\"get_thome\":\"/get_thome\"," 
-            "\"message_send\":\"/message/send\""
+            "\"message_send\":\"/message/send\"," 
+            "\"tasks_get\":\"/tasks/get\""
         "},"
         "\"auth\":{"
             "\"type\":\"bearer_or_query_token\","
             "\"header\":\"Authorization: Bearer <token>\","
             "\"query\":\"token=<token>\""
         "},"
-        "\"tools\":[\"tool_ble\",\"tool_camera\"]"
+        "\"tools\":[\"tool_ble\",\"tool_camera\",\"tool_image_fft\"],"
+        "\"task_modes\":[\"sync\",\"async\"]"
         "}";
 
     return httpd_resp_sendstr(req, body);
@@ -514,6 +634,14 @@ static esp_err_t agent_well_known_handler(httpd_req_t *req)
 
 void camera_http_start_server(void)
 {
+    a2a_task_store_init();
+
+    // Spawn background task executor thread
+    if (!s_task_executor_running) {
+        s_task_executor_running = xSemaphoreCreateBinary();
+        xTaskCreate(task_executor_thread, "task_executor", 8192, NULL, 3, NULL);
+    }
+
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 8192;
 
@@ -559,6 +687,14 @@ void camera_http_start_server(void)
         };
         httpd_register_uri_handler(server, &message_send_uri);
 
+        httpd_uri_t tasks_get_uri = {
+            .uri = "/tasks/get",
+            .method = HTTP_POST,
+            .handler = tasks_get_handler,
+            .user_ctx = NULL,
+        };
+        httpd_register_uri_handler(server, &tasks_get_uri);
+
         httpd_uri_t well_known_agent_card_uri = {
             .uri = "/.well-known/agent-card.json",
             .method = HTTP_GET,
@@ -567,7 +703,7 @@ void camera_http_start_server(void)
         };
         httpd_register_uri_handler(server, &well_known_agent_card_uri);
 
-        // compatibility with simple version 
+        // For compatibility with older versions of the spec, also serve the agent info at /well-known/agent.json
         httpd_uri_t well_known_agent_uri = {
             .uri = "/.well-known/agent.json",
             .method = HTTP_GET,

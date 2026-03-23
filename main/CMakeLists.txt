@@ -1,5 +1,7 @@
 idf_component_register(
     SRCS "main.c"
+        "a2a/a2a_rpc.c"
+        "a2a/task_store.c"
         "ble/bthome_listener.c"
         "camera_core/camera_core.c"
         "camera_http/camera_http.c"
@@ -7,6 +9,7 @@ idf_component_register(
         "tools/a2a_tools.c"
         "wifi_sta/wifi_sta.c"
     INCLUDE_DIRS "."
+              "a2a"
               "ble"
               "camera_core"
               "camera_http"
@@ -24,5 +27,6 @@ idf_component_register(
         json
         esp_psram
         esp32-camera
+        esp-dsp
         bt
 )

@@ -141,6 +141,10 @@ esp_err_t llm_chat_with_tools(const char *user_text, char *reply, size_t reply_s
     cJSON_AddStringToObject(user_msg, "content", user_text);
     cJSON_AddItemToArray(messages, user_msg);
 
+    ESP_LOGI(TAG, "LLM chat start, user_text: %.80s%s",
+             user_text,
+             strlen(user_text) > 80 ? "..." : "");
+
     esp_err_t final_ret = ESP_FAIL;
     for (int iter = 0; iter < LLM_MAX_TOOL_ITERS; iter++) {
         cJSON *payload = cJSON_CreateObject();
@@ -211,6 +215,10 @@ esp_err_t llm_chat_with_tools(const char *user_text, char *reply, size_t reply_s
             char tool_result[512] = {0};
             if (name && cJSON_IsString(name) && name->valuestring) {
                 (void)a2a_tools_execute(name->valuestring, tool_result, sizeof(tool_result));
+                ESP_LOGI(TAG, "Executed tool '%s', result: %.80s%s",
+                         name->valuestring,
+                         tool_result,
+                         strlen(tool_result) > 80 ? "..." : "");
             } else {
                 snprintf(tool_result, sizeof(tool_result), "{\"ok\":false,\"error\":\"invalid_tool_call\"}");
             }
@@ -232,6 +240,10 @@ esp_err_t llm_chat_with_tools(const char *user_text, char *reply, size_t reply_s
     if (final_ret != ESP_OK && reply[0] == '\0') {
         strlcpy(reply, "Sorry, I cannot reach cloud LLM right now.", reply_size);
     }
+
+    ESP_LOGI(TAG, "LLM final reply: %.80s%s",
+             reply,
+             strlen(reply) > 80 ? "..." : "");
 
     cJSON_Delete(messages);
     cJSON_Delete(tools);

@@ -65,14 +65,45 @@ This firmware exposes a lightweight A2A-compatible server surface:
 - Discovery:
 	- `GET /.well-known/agent.json`
 	- `GET /.well-known/agent-card.json`
-- Message endpoint:
-	- `POST /message/send`
+- Message endpoints:
+	- `POST /message/send` (create task - sync or async)
+	- `POST /tasks/get` (check task status)
 
 The `/message/send` endpoint accepts JSON-RPC 2.0 requests and returns JSON-RPC 2.0 responses.
 Internally it calls a cloud LLM and allows tool calls for:
 
 - `tool_ble`: read latest BTHome sensor data
 - `tool_camera`: read camera endpoint/status info
+- `tool_image_fft`: compute FFT analysis of latest captured image (async-capable)
+
+### Task Execution Modes
+
+**Synchronous (default):**
+```json
+{
+	"jsonrpc": "2.0",
+	"id": "req-1",
+	"method": "message/send",
+	"params": {
+		"message": "What is the latest temperature?"
+	}
+}
+```
+Returns result immediately after LLM completes processing.
+
+**Asynchronous (set `isAsync: true`):**
+```json
+{
+	"jsonrpc": "2.0",
+	"id": "req-2",
+	"method": "message/send",
+	"params": {
+		"message": "Analyze the captured image in detail",
+		"isAsync": true
+	}
+}
+```
+Returns task ID immediately, execution happens in background. Poll with `tasks/get` to check status.
 
 ### Request Example
 
@@ -150,6 +181,48 @@ Examples:
 curl -H "Authorization: Bearer <token>" http://<device_ip>/capture -o capture.jpg
 curl "http://<device_ip>/stream?token=<token>"
 ```
+
+### Task Status Polling
+
+For async tasks, use `tasks/get` to check status:
+
+```bash
+curl -X POST "http://<device_ip>/tasks/get?token=<token>" \
+	-H "Content-Type: application/json" \
+	-d '{
+		"jsonrpc":"2.0",
+		"id":"status-1",
+		"method":"tasks/get",
+		"params":{"id":"task-1679123456789-1"}
+	}'
+```
+
+Response includes task state: `queued`, `running`, `completed`, or `failed`.
+
+### Image FFT Analysis Tool
+
+The `tool_image_fft` performs Fast Fourier Transform analysis on the latest captured image:
+
+```bash
+curl -X POST "http://<device_ip>/message/send?token=<token>" \
+	-H "Content-Type: application/json" \
+	-d '{
+		"jsonrpc":"2.0",
+		"id":"req-3",
+		"method":"message/send",
+		"params":{
+			"message":"Analyze image quality using FFT",
+			"isAsync":true
+		}
+	}'
+```
+
+Returns FFT magnitude spectrum summary (samples count, max frequency, magnitude sum) which can be used for:
+- Image quality assessment
+- Blur detection
+- Frequency content analysis
+
+**See [ASYNC_TASK_EXAMPLES.md](ASYNC_TASK_EXAMPLES.md) for detailed examples of sync/async task usage.**
 
 ## BLE BTHome Listener
 
