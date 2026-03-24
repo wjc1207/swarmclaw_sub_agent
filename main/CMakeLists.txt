@@ -27,6 +27,5 @@ idf_component_register(
         json
         esp_psram
         esp32-camera
-        esp-dsp
         bt
 )
