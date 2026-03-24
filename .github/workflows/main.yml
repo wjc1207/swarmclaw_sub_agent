@@ -20,5 +20,4 @@ jobs:
 
       - name: Build project
         run: |
-          . $IDF_PATH/export.sh
           idf.py build
