@@ -5,7 +5,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
-#include "config.h"
+#include "camera_config.h"
 
 static const char *TAG = "camera_sta";
 

@@ -1,20 +1,23 @@
-#include "task_store.h"
+#include "task_manager.h"
 
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "llm_chat.h"
 
 #define A2A_TASK_CAPACITY 16
+static const char *TAG = "task_manager";
 
 static a2a_task_t s_tasks[A2A_TASK_CAPACITY];
 static int s_next_idx = 0;
 static uint32_t s_seq = 0;
 static SemaphoreHandle_t s_task_mutex = NULL;
 
-void a2a_task_store_init(void)
+void a2a_task_manager_init(void)
 {
     if (!s_task_mutex) {
         s_task_mutex = xSemaphoreCreateMutex();
@@ -27,7 +30,7 @@ void a2a_task_store_init(void)
     xSemaphoreGive(s_task_mutex);
 }
 
-const a2a_task_t *a2a_task_create(const char *input, const char *state, const char *tool_name)
+const a2a_task_t *a2a_task_create(const char *input, const char *state)
 {
     if (!s_task_mutex) {
         return NULL;
@@ -44,7 +47,6 @@ const a2a_task_t *a2a_task_create(const char *input, const char *state, const ch
              (unsigned long)s_seq);
     strlcpy(task->state, state ? state : A2A_TASK_STATE_QUEUED, sizeof(task->state));
     strlcpy(task->input, input ? input : "", sizeof(task->input));
-    strlcpy(task->tool_name, tool_name ? tool_name : "", sizeof(task->tool_name));
     memset(task->output, 0, sizeof(task->output));
     task->created_ms = now_ms;
     task->updated_ms = now_ms;
@@ -74,7 +76,6 @@ const a2a_task_t *a2a_task_create_completed(const char *input, const char *outpu
     strlcpy(task->state, A2A_TASK_STATE_COMPLETED, sizeof(task->state));
     strlcpy(task->input, input ? input : "", sizeof(task->input));
     strlcpy(task->output, output ? output : "", sizeof(task->output));
-    memset(task->tool_name, 0, sizeof(task->tool_name));
     task->created_ms = now_ms;
     task->updated_ms = now_ms;
 
@@ -88,6 +89,7 @@ const a2a_task_t *a2a_task_create_completed(const char *input, const char *outpu
 const a2a_task_t *a2a_task_get(const char *task_id)
 {
     if (!task_id || task_id[0] == '\0' || !s_task_mutex) {
+        ESP_LOGE(TAG, "Invalid task ID or mutex");
         return NULL;
     }
 
@@ -108,6 +110,7 @@ const a2a_task_t *a2a_task_get(const char *task_id)
 int a2a_task_update(const char *task_id, const char *state, const char *output)
 {
     if (!task_id || task_id[0] == '\0' || !s_task_mutex) {
+        ESP_LOGE(TAG, "Invalid task ID or mutex");
         return -1;
     }
 

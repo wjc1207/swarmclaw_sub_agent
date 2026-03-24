@@ -9,7 +9,7 @@
 #include "esp_crt_bundle.h"
 #include "cJSON.h"
 
-#include "secrets.h"
+#include "config.h"
 #include "a2a_tools.h"
 
 static const char *TAG = "llm_chat";

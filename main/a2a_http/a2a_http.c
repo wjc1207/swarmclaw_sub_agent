@@ -1,4 +1,4 @@
-#include "camera_http.h"
+#include "a2a_http.h"
 
 #include <inttypes.h>
 #include <string.h>
@@ -14,30 +14,22 @@
 #include "esp_camera.h"
 #include "img_converters.h"
 
-#include "secrets.h"
+#include "config.h"
 #include "camera_core.h"
 #include "bthome_listener.h"
 #include "a2a/a2a_rpc.h"
-#include "a2a/task_store.h"
+#include "a2a/task_manager.h"
 #include "llm/llm_chat.h"
 #include "tools/a2a_tools.h"
 
 #include "esp_timer.h"
 
-static const char *TAG = "camera_sta";
+static const char *TAG = "a2a_http";
 static uint8_t *s_last_capture_jpg = NULL;
 static size_t s_last_capture_jpg_len = 0;
-static SemaphoreHandle_t s_task_executor_running = NULL;
 
 #define MSG_REQ_MAX_BYTES   4096
 #define MSG_RESP_MAX_BYTES  2048
-
-typedef enum {
-    TASK_TYPE_LLM = 0,
-    TASK_TYPE_CAPTURE,
-    TASK_TYPE_BLE_THEMO,
-    TASK_TYPE_IMAGE_FFT,
-} task_type_t;
 
 static bool check_auth(httpd_req_t *req)
 {
@@ -63,125 +55,6 @@ static bool check_auth(httpd_req_t *req)
     }
 
     return false;
-}
-
-static void task_executor_thread(void *arg)
-{
-    (void)arg;
-    while (true) {
-        // Find next queued task
-        const a2a_task_t *task = a2a_task_find_next_queued();
-        if (!task) {
-            // No queued tasks, sleep briefly
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
-
-        // Copy task ID and tool name (to avoid dangling pointers)
-        char task_id[40];
-        char tool_name[64];
-        strlcpy(task_id, task->id, sizeof(task_id));
-        strlcpy(tool_name, task->tool_name, sizeof(tool_name));
-
-        ESP_LOGI(TAG, "Executing async task %s with tool %s", task_id, tool_name);
-
-        // Mark task as running
-        a2a_task_update(task_id, A2A_TASK_STATE_RUNNING, NULL);
-
-        // Execute async task by task type/tool name
-        char *result = (char *)calloc(1, 2048);
-        if (!result) {
-            a2a_task_update(task_id, A2A_TASK_STATE_FAILED, "{\"ok\":false,\"error\":\"oom\"}");
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-
-        esp_err_t exec_ret = ESP_ERR_NOT_FOUND;
-        if (strcmp(tool_name, "tool_image_fft") == 0 ||
-            strcmp(tool_name, "tool_ble") == 0 ||
-            strcmp(tool_name, "tool_camera") == 0) {
-            exec_ret = a2a_tools_execute(tool_name, result, 2048);
-        } else if (strcmp(tool_name, "llm_message") == 0) {
-            exec_ret = llm_chat_with_tools(task->input, result, 2048);
-        } else {
-            snprintf(result, 2048, "{\"ok\":false,\"error\":\"unknown_task_type\",\"tool\":\"%s\"}", tool_name);
-        }
-
-        // Mark task as completed or failed
-        const char *final_state = (exec_ret == ESP_OK) ? A2A_TASK_STATE_COMPLETED : A2A_TASK_STATE_FAILED;
-        a2a_task_update(task_id, final_state, result);
-        free(result);
-
-        ESP_LOGI(TAG, "Async task %s completed with state %s", task_id, final_state);
-
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-}
-
-static task_type_t a2a_extract_task_type(cJSON *params, const char *msg_text)
-{
-    cJSON *task_type_obj = params ? cJSON_GetObjectItem(params, "taskType") : NULL;
-    if (cJSON_IsString(task_type_obj) && task_type_obj->valuestring) {
-        const char *t = task_type_obj->valuestring;
-        if (strcmp(t, "image_fft") == 0) {
-            return TASK_TYPE_IMAGE_FFT;
-        }
-        if (strcmp(t, "capture") == 0) {
-            return TASK_TYPE_CAPTURE;
-        }
-        if (strcmp(t, "ble_themo") == 0 || strcmp(t, "ble_thermo") == 0) {
-            return TASK_TYPE_BLE_THEMO;
-        }
-        if (strcmp(t, "llm") == 0) {
-            return TASK_TYPE_LLM;
-        }
-    }
-
-    if (!msg_text) {
-        return TASK_TYPE_LLM;
-    }
-
-    if (strstr(msg_text, "image_fft") || strstr(msg_text, "fft") || strstr(msg_text, "FFT")) {
-        return TASK_TYPE_IMAGE_FFT;
-    }
-    if (strstr(msg_text, "ble_themo") || strstr(msg_text, "ble_thermo") || strstr(msg_text, "ble thermo")) {
-        return TASK_TYPE_BLE_THEMO;
-    }
-    if (strstr(msg_text, "capture") || strstr(msg_text, "拍照")) {
-        return TASK_TYPE_CAPTURE;
-    }
-
-    return TASK_TYPE_LLM;
-}
-
-static const char *task_type_to_name(task_type_t task_type)
-{
-    switch (task_type) {
-        case TASK_TYPE_CAPTURE:
-            return "capture";
-        case TASK_TYPE_BLE_THEMO:
-            return "ble_themo";
-        case TASK_TYPE_IMAGE_FFT:
-            return "image_fft";
-        case TASK_TYPE_LLM:
-        default:
-            return "llm";
-    }
-}
-
-static const char *task_type_to_tool(task_type_t task_type)
-{
-    switch (task_type) {
-        case TASK_TYPE_CAPTURE:
-            return "tool_camera";
-        case TASK_TYPE_BLE_THEMO:
-            return "tool_ble";
-        case TASK_TYPE_IMAGE_FFT:
-            return "tool_image_fft";
-        case TASK_TYPE_LLM:
-        default:
-            return "llm_message";
-    }
 }
 
 static esp_err_t stream_handler(httpd_req_t *req)
@@ -310,7 +183,7 @@ static esp_err_t capture_handler(httpd_req_t *req)
     return res;
 }
 
-static esp_err_t capture_human_handler(httpd_req_t *req)
+static esp_err_t capture_hr_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) {
         httpd_resp_set_status(req, "401 Unauthorized");
@@ -340,7 +213,7 @@ static esp_err_t capture_human_handler(httpd_req_t *req)
     return res;
 }
 
-static esp_err_t get_thome_handler(httpd_req_t *req)
+static esp_err_t get_th_handler(httpd_req_t *req)
 {
     if (!check_auth(req)) {
         httpd_resp_set_status(req, "401 Unauthorized");
@@ -524,52 +397,25 @@ static esp_err_t message_send_handler(httpd_req_t *req)
         return ret;
     }
 
-    task_type_t task_type = a2a_extract_task_type(params, msg_text);
-    bool is_async = (task_type == TASK_TYPE_IMAGE_FFT);
-    const char *task_type_name = task_type_to_name(task_type);
-    const char *tool_name = task_type_to_tool(task_type);
-
-    ESP_LOGI(TAG, "message/send received type=%s mode=%s: %.80s%s",
-             task_type_name,
-             is_async ? "async" : "sync",
+    ESP_LOGI(TAG, "message/send received: %.80s%s",
              msg_text,
              strlen(msg_text) > 80 ? "..." : "");
 
-    const a2a_task_t *task = NULL;
-    char answer[MSG_RESP_MAX_BYTES] = {0};
-
-    if (is_async) {
-        // image_fft is always async: enqueue and return task id immediately
-        task = a2a_task_create(msg_text, A2A_TASK_STATE_QUEUED, tool_name);
-        if (!task) {
-            char *err = a2a_build_jsonrpc_error(id, -32603, "Internal error", "task_create_failed");
-            cJSON_Delete(root);
-            free(payload);
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-            if (!err) {
-                return httpd_resp_sendstr(req,
-                    "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
-            }
-            esp_err_t ret = httpd_resp_sendstr(req, err);
-            free(err);
-            return ret;
+    // Always enqueue as async task - llm_chat_with_tools runs in task executor
+    const a2a_task_t *task = a2a_task_create(msg_text, A2A_TASK_STATE_QUEUED);
+    if (!task) {
+        char *err = a2a_build_jsonrpc_error(id, -32603, "Internal error", "task_create_failed");
+        cJSON_Delete(root);
+        free(payload);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        if (!err) {
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
         }
-    } else {
-        // capture / ble_themo / default llm are sync
-        esp_err_t exec_ret = ESP_OK;
-        if (task_type == TASK_TYPE_CAPTURE || task_type == TASK_TYPE_BLE_THEMO) {
-            exec_ret = a2a_tools_execute(tool_name, answer, sizeof(answer));
-        } else {
-            exec_ret = llm_chat_with_tools(msg_text, answer, sizeof(answer));
-        }
-
-        if (exec_ret != ESP_OK) {
-            snprintf(answer, sizeof(answer),
-                     "{\"ok\":false,\"error\":\"exec_failed\",\"task_type\":\"%s\",\"esp_err\":%d}",
-                     task_type_name, (int)exec_ret);
-        }
-        task = a2a_task_create_completed(msg_text, answer);
+        esp_err_t ret = httpd_resp_sendstr(req, err);
+        free(err);
+        return ret;
     }
 
     char *resp_str = a2a_build_task_result(id, task);
@@ -595,7 +441,112 @@ static esp_err_t message_send_handler(httpd_req_t *req)
 
 static esp_err_t tasks_get_handler(httpd_req_t *req)
 {
-    return message_send_handler(req);
+    if (!check_auth(req)) {
+        httpd_resp_set_status(req, "401 Unauthorized");
+        httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer realm=\"camera\"");
+        httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
+        return ESP_FAIL;
+    }
+
+    if (req->content_len <= 0 || req->content_len > MSG_REQ_MAX_BYTES) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_sendstr(req, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"Invalid Request\",\"data\":\"invalid_body_length\"}}");
+    }
+
+    char *payload = (char *)calloc(1, req->content_len + 1);
+    if (!payload) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_sendstr(req,
+            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":\"oom\"}}");
+    }
+
+    int received = 0;
+    while (received < req->content_len) {
+        int ret = httpd_req_recv(req, payload + received, req->content_len - received);
+        if (ret <= 0) {
+            free(payload);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":\"recv_failed\"}}");
+        }
+        received += ret;
+    }
+
+    cJSON *root = NULL;
+    cJSON *id = NULL;
+    const char *method = NULL;
+    cJSON *params = NULL;
+    char *parse_error_json = NULL;
+    if (!a2a_parse_rpc_request(payload, &root, &id, &method, &params, &parse_error_json)) {
+        free(payload);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        if (!parse_error_json) {
+            parse_error_json = a2a_build_jsonrpc_error(NULL, -32603, "Internal error", "oom");
+        }
+        if (!parse_error_json) {
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+        }
+        esp_err_t ret = httpd_resp_sendstr(req, parse_error_json);
+        free(parse_error_json);
+        return ret;
+    }
+
+    if (strcmp(method, "tasks/get") == 0) {
+        const char *task_id = a2a_extract_task_id(params);
+        if (!task_id || task_id[0] == '\0') {
+            char *err = a2a_build_jsonrpc_error(id, -32602, "Invalid params", "task id is required");
+            cJSON_Delete(root);
+            free(payload);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+            if (!err) {
+                return httpd_resp_sendstr(req,
+                    "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+            }
+            esp_err_t ret = httpd_resp_sendstr(req, err);
+            free(err);
+            return ret;
+        }
+
+        const a2a_task_t *task = a2a_task_get(task_id);
+        if (!task) {
+            char *err = a2a_build_jsonrpc_error(id, -32004, "Task not found", task_id);
+            cJSON_Delete(root);
+            free(payload);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+            if (!err) {
+                return httpd_resp_sendstr(req,
+                    "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+            }
+            esp_err_t ret = httpd_resp_sendstr(req, err);
+            free(err);
+            return ret;
+        }
+
+        char *resp_str = a2a_build_task_result(id, task);
+        cJSON_Delete(root);
+        free(payload);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        httpd_resp_set_hdr(req, "Pragma", "no-cache");
+        httpd_resp_set_hdr(req, "Expires", "0");
+        if (!resp_str) {
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":\"oom\"}}");
+        }
+        esp_err_t ret = httpd_resp_sendstr(req, resp_str);
+        free(resp_str);
+        return ret;
+    }
+    return httpd_resp_sendstr(req,
+        "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32601,\"message\":\"Method not found\",\"data\":\"supported: tasks/get\"}}");
 }
 
 static esp_err_t agent_well_known_handler(httpd_req_t *req)
@@ -611,37 +562,64 @@ static esp_err_t agent_well_known_handler(httpd_req_t *req)
         "\"schema_version\":\"a2a-sim-1\","
         "\"id\":\"swarmclaw-sub-agent\","
         "\"name\":\"SwarmClaw Sub Agent\","
-        "\"description\":\"ESP32 camera and BTHome edge agent for A2A simulation with async task support\","
+        "\"description\":\"ESP32 camera and BTHome edge agent for A2A agent-to-agent communication. All messages processed asynchronously by LLM with tool support.\","
         "\"endpoints\":{"
-            "\"stream\":\"/stream\"," 
-            "\"capture\":\"/capture\"," 
-            "\"capture_human\":\"/capture_human\"," 
-            "\"get_thome\":\"/get_thome\"," 
-            "\"message_send\":\"/message/send\"," 
+            "\"stream\":\"/stream\","
+            "\"capture\":\"/capture\","
+            "\"capture_human\":\"/capture_human\","
+            "\"get_th\":\"/get_th\","
+            "\"message_send\":\"/message/send\","
             "\"tasks_get\":\"/tasks/get\""
+        "},"
+        "\"usage\":{"
+            "\"message/send\":{"
+                "\"method\":\"POST\","
+                "\"description\":\"Send a message to the agent for LLM processing. Returns immediately with a queued task ID.\","
+                "\"request_params\":{"
+                    "\"jsonrpc\":\"2.0\","
+                    "\"id\":\"<request-id>\","
+                    "\"method\":\"message/send\","
+                    "\"params\":{"
+                        "\"message_text\":\"<user-message>\""
+                    "}"
+                "},"
+                "\"response\":\"Returns task object with id and queued state. Poll result via /tasks/get\""
+            "},"
+            "\"tasks/get\":{"
+                "\"method\":\"POST\","
+                "\"description\":\"Get the current state and result of a previously queued task\","
+                "\"request_params\":{"
+                    "\"jsonrpc\":\"2.0\","
+                    "\"id\":\"<request-id>\","
+                    "\"method\":\"tasks/get\","
+                    "\"params\":{"
+                        "\"task_id\":\"<task-id-from-message-send>\""
+                    "}"
+                "},"
+                "\"response\":\"Returns task object with current state and output if completed\""
+            "}"
+        "},"
+        "\"message_send_params\":{"
+            "\"type\":\"object\","
+            "\"properties\":{"
+                "\"message_text\":{\"type\":\"string\"}"
+            "},"
+            "\"required\":[\"message_text\"]"
         "},"
         "\"auth\":{"
             "\"type\":\"bearer_or_query_token\","
             "\"header\":\"Authorization: Bearer <token>\","
             "\"query\":\"token=<token>\""
         "},"
-        "\"tools\":[\"tool_ble\",\"tool_camera\",\"tool_image_fft\"],"
-        "\"task_modes\":[\"sync\",\"async\"]"
+        "\"tools\":[\"tool_ble\",\"tool_camera\"],"
+        "\"task_mode\":\"async\""
         "}";
 
     return httpd_resp_sendstr(req, body);
 }
 
-void camera_http_start_server(void)
+void a2a_http_start_server(void)
 {
-    a2a_task_store_init();
-
-    // Spawn background task executor thread
-    if (!s_task_executor_running) {
-        s_task_executor_running = xSemaphoreCreateBinary();
-        xTaskCreate(task_executor_thread, "task_executor", 8192, NULL, 3, NULL);
-    }
-
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 8192;
 
@@ -663,21 +641,21 @@ void camera_http_start_server(void)
         };
         httpd_register_uri_handler(server, &capture_uri);
 
-        httpd_uri_t capture_human_uri = {
-            .uri = "/capture_human",
+        httpd_uri_t capture_hr_uri = {
+            .uri = "/capture_hr",
             .method = HTTP_GET,
-            .handler = capture_human_handler,
+            .handler = capture_hr_handler,
             .user_ctx = NULL,
         };
-        httpd_register_uri_handler(server, &capture_human_uri);
+        httpd_register_uri_handler(server, &capture_hr_uri);
 
-        httpd_uri_t get_thome_uri = {
-            .uri = "/get_thome",
+        httpd_uri_t get_th_uri = {
+            .uri = "/get_th",
             .method = HTTP_GET,
-            .handler = get_thome_handler,
+            .handler = get_th_handler,
             .user_ctx = NULL,
         };
-        httpd_register_uri_handler(server, &get_thome_uri);
+        httpd_register_uri_handler(server, &get_th_uri);
 
         httpd_uri_t message_send_uri = {
             .uri = "/message/send",
