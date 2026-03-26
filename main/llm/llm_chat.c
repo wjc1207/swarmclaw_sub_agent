@@ -141,9 +141,10 @@ esp_err_t llm_chat_with_tools(const char *user_text, char *reply, size_t reply_s
     cJSON_AddStringToObject(user_msg, "content", user_text);
     cJSON_AddItemToArray(messages, user_msg);
 
-    ESP_LOGI(TAG, "LLM chat start, user_text: %.80s%s",
+    ESP_LOGI(TAG, "LLM chat start, user_text: %.*s%s",
+             (int)LLM_CHAT_PREV_LEN,
              user_text,
-             strlen(user_text) > 80 ? "..." : "");
+             strlen(user_text) > LLM_CHAT_PREV_LEN ? "..." : "");
 
     esp_err_t final_ret = ESP_FAIL;
     for (int iter = 0; iter < LLM_MAX_TOOL_ITERS; iter++) {
@@ -215,10 +216,11 @@ esp_err_t llm_chat_with_tools(const char *user_text, char *reply, size_t reply_s
             char tool_result[512] = {0};
             if (name && cJSON_IsString(name) && name->valuestring) {
                 (void)a2a_tools_execute(name->valuestring, tool_result, sizeof(tool_result));
-                ESP_LOGI(TAG, "Executed tool '%s', result: %.80s%s",
+                ESP_LOGI(TAG, "Executed tool '%s', result: %.*s%s",
                          name->valuestring,
+                         (int)LLM_CHAT_PREV_LEN,
                          tool_result,
-                         strlen(tool_result) > 80 ? "..." : "");
+                         strlen(tool_result) > LLM_CHAT_PREV_LEN ? "..." : "");
             } else {
                 snprintf(tool_result, sizeof(tool_result), "{\"ok\":false,\"error\":\"invalid_tool_call\"}");
             }
@@ -241,9 +243,10 @@ esp_err_t llm_chat_with_tools(const char *user_text, char *reply, size_t reply_s
         strlcpy(reply, "Sorry, I cannot reach cloud LLM right now.", reply_size);
     }
 
-    ESP_LOGI(TAG, "LLM final reply: %.80s%s",
+    ESP_LOGI(TAG, "LLM final reply: %.*s%s",
+             (int)LLM_CHAT_PREV_LEN,
              reply,
-             strlen(reply) > 80 ? "..." : "");
+             strlen(reply) > LLM_CHAT_PREV_LEN ? "..." : "");
 
     cJSON_Delete(messages);
     cJSON_Delete(tools);

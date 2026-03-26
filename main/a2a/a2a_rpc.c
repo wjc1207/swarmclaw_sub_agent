@@ -79,7 +79,7 @@ char *a2a_build_task_result(cJSON *id, const a2a_task_t *task)
 const char *a2a_extract_message_text(cJSON *params)
 {
     cJSON *message = cJSON_GetObjectItem(params, "message");
-    cJSON *text = cJSON_GetObjectItem(params, "text");
+    cJSON *text = cJSON_GetObjectItem(params, "message_text");
 
     if (cJSON_IsString(message) && message->valuestring) {
         return message->valuestring;
@@ -122,7 +122,7 @@ const char *a2a_extract_task_id(cJSON *params)
         return id->valuestring;
     }
 
-    cJSON *task_id = cJSON_GetObjectItem(params, "taskId");
+    cJSON *task_id = cJSON_GetObjectItem(params, "task_id");
     if (cJSON_IsString(task_id) && task_id->valuestring) {
         return task_id->valuestring;
     }

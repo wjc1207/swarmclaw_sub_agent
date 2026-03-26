@@ -5,18 +5,20 @@ idf_component_register(
         "ble/bthome_listener.c"
         "camera_core/camera_core.c"
         "a2a_http/a2a_http.c"
+        "cli/serial_cli.c"
         "llm/llm_chat.c"
         "tools/a2a_tools.c"
         "wifi_sta/wifi_sta.c"
     INCLUDE_DIRS "."
               "a2a"
               "a2a_http"
+              "cli"
               "ble"
               "camera_core"
               "llm"
               "tools"
               "wifi_sta"
-    PRIV_REQUIRES 
+    PRIV_REQUIRES
         esp_wifi
         esp_event
         esp_netif
@@ -28,4 +30,5 @@ idf_component_register(
         esp_psram
         esp32-camera
         bt
+        console
 )

@@ -11,31 +11,15 @@
 #include "bthome_listener.h"
 #include "camera_core.h"
 #include "wifi_sta.h"
+#include "a2a_http/a2a_http.h"
 
 static void tool_ble_execute(char *out, size_t out_size)
 {
-    thome_reading_t reading = {0};
-    bool has = bthome_listener_get_latest(&reading);
-    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    char ip_str[16] = {0};
+    wifi_sta_get_ip(ip_str, sizeof(ip_str));
 
-    if (!has) {
-        snprintf(out, out_size, "{\"ok\":true,\"status\":\"no_data\"}");
-        return;
-    }
-
-    snprintf(out, out_size,
-             "{\"ok\":true,\"status\":\"ok\",\"source_addr\":\"%s\",\"last_seen_ms\":%" PRIu32 ","
-             "\"encrypted\":%s,\"temperature\":%.2f,\"temperature_valid\":%s,\"humidity\":%.2f,"
-             "\"humidity_valid\":%s,\"battery\":%d,\"battery_valid\":%s}",
-             reading.source_addr,
-             now_ms - reading.last_seen_ms,
-             reading.encrypted ? "true" : "false",
-             reading.temperature_c,
-             reading.temperature_valid ? "true" : "false",
-             reading.humidity_percent,
-             reading.humidity_valid ? "true" : "false",
-             reading.battery_percent,
-             reading.battery_valid ? "true" : "false");
+    snprintf(out, out_size, "{\"ok\":true,\"status\":\"connected\",\"url\":\"http://%s/get_th\",\"ip\":\"%s\",\"note\":\"Requires valid access token, call tool_get_token to get a new token\"}",
+             ip_str, ip_str);
 }
 
 static void tool_camera_execute(char *out, size_t out_size)
@@ -43,8 +27,23 @@ static void tool_camera_execute(char *out, size_t out_size)
     char ip_str[16] = {0};
     wifi_sta_get_ip(ip_str, sizeof(ip_str));
 
-    snprintf(out, out_size, "{\"ok\":true,\"status\":\"connected\",\"url\":\"http://%s/capture\",\"ip\":\"%s\"}",
+    snprintf(out, out_size, "{\"ok\":true,\"status\":\"connected\",\"url\":\"http://%s/capture\",\"ip\":\"%s\",\"note\":\"Requires valid access token, call tool_get_token to get a new token\"}",
              ip_str, ip_str);
+}
+
+static void tool_get_token_execute(char *out, size_t out_size)
+{
+    // Regenerate token immediately
+    a2a_http_regenerate_token();
+    const char *token = a2a_http_get_current_token();
+    uint64_t expiry_ms = 10 * 60 * 1000; // 10 minutes
+
+    snprintf(out, out_size,
+             "{\"ok\":true,"
+             "\"token\":\"%s\","
+             "\"expires_in_ms\":%" PRIu64 ","
+             "\"expires_in_minutes\":%.1f}",
+             token, expiry_ms, (double)expiry_ms / 60000.0);
 }
 
 cJSON *a2a_tools_build_schema(void)
@@ -62,7 +61,7 @@ cJSON *a2a_tools_build_schema(void)
     cJSON *ble_required = cJSON_CreateArray();
     cJSON_AddStringToObject(tool_ble, "type", "function");
     cJSON_AddStringToObject(ble_fn, "name", "tool_ble");
-    cJSON_AddStringToObject(ble_fn, "description", "Get latest BLE BTHome sensor reading from this device.");
+    cJSON_AddStringToObject(ble_fn, "description", "Get BTHome temperature/humidity endpoint information from this device.");
     cJSON_AddStringToObject(ble_params, "type", "object");
     cJSON_AddItemToObject(ble_params, "properties", ble_props);
     cJSON_AddItemToObject(ble_params, "required", ble_required);
@@ -86,6 +85,22 @@ cJSON *a2a_tools_build_schema(void)
     cJSON_AddItemToObject(tool_camera, "function", cam_fn);
     cJSON_AddItemToArray(tools, tool_camera);
 
+    // Tool: tool_get_token
+    cJSON *tool_get_token = cJSON_CreateObject();
+    cJSON *gt_fn = cJSON_CreateObject();
+    cJSON *gt_params = cJSON_CreateObject();
+    cJSON *gt_props = cJSON_CreateObject();
+    cJSON *gt_required = cJSON_CreateArray();
+    cJSON_AddStringToObject(tool_get_token, "type", "function");
+    cJSON_AddStringToObject(gt_fn, "name", "tool_get_token");
+    cJSON_AddStringToObject(gt_fn, "description", "Generate a new API access token. The new token is valid for 10 minutes and invalidates any previous token. Returns the new token.");
+    cJSON_AddStringToObject(gt_params, "type", "object");
+    cJSON_AddItemToObject(gt_params, "properties", gt_props);
+    cJSON_AddItemToObject(gt_params, "required", gt_required);
+    cJSON_AddItemToObject(gt_fn, "parameters", gt_params);
+    cJSON_AddItemToObject(tool_get_token, "function", gt_fn);
+    cJSON_AddItemToArray(tools, tool_get_token);
+
     return tools;
 }
 
@@ -102,6 +117,11 @@ esp_err_t a2a_tools_execute(const char *name, char *out, size_t out_size)
 
     if (strcmp(name, "tool_camera") == 0) {
         tool_camera_execute(out, out_size);
+        return ESP_OK;
+    }
+
+    if (strcmp(name, "tool_get_token") == 0) {
+        tool_get_token_execute(out, out_size);
         return ESP_OK;
     }
 

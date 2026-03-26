@@ -20,6 +20,8 @@ main/
 ├── ble/
 │   └── bthome_listener.c/h - BTHome BLE scanner
 ├── camera_core/            - Camera driver and initialization
+├── cli/
+│   └── serial_cli.c/h      - Serial interactive CLI
 ├── llm/
 │   └── llm_chat.c/h        - LLM API client (llm_chat_with_tools)
 ├── tools/
@@ -53,10 +55,9 @@ cp main/secrets.h.example main/secrets.h
 3. Edit your configuration - either edit `main/secrets.h` or directly in `main/config.h`:
 	- `WIFI_SSID` - Your Wi-Fi name
 	- `WIFI_PASS` - Your Wi-Fi password
-	- `CAM_API_TOKEN` - HTTP API authentication token (optional, can be empty)
-	- `LLM_API_BASE` - Cloud LLM API base URL
 	- `LLM_API_KEY` - Cloud LLM API key
 	- `LLM_MODEL` - LLM model name to use
+	- `LLM_API_URL` - Cloud LLM API endpoint URL (OpenAI-compatible)
 
 4. Build and flash:
 
@@ -81,8 +82,8 @@ Camera routes:
 - `GET /stream`: MJPEG live stream
 - `GET /capture`: capture latest frame (JPEG)
 - `GET /snapshot`: return cached last `/capture` image
-- `GET /capture_human`: high-resolution still capture
-- `GET /get_thome`: latest BLE BTHome reading as JSON
+- `GET /capture_hr`: high-resolution still capture
+- `GET /get_th`: latest BLE BTHome reading as JSON
 
 ## A2A Agent (JSON-RPC 2.0)
 
@@ -165,17 +166,24 @@ The LLM can call these local tools when needed:
 
 | Tool | Description |
 |------|-------------|
-| `tool_ble` | Get latest BTHome sensor reading from this device (temperature, humidity, battery) |
-| `tool_camera` | Get camera endpoint/status information from this device |
+| `tool_ble` | Get BTHome temperature/humidity endpoint URL from this device. The returned endpoint requires an access token. Call `tool_get_token` to get a valid token. |
+| `tool_camera` | Get camera capture endpoint URL from this device. The returned endpoint requires an access token. Call `tool_get_token` to get a valid token. |
+| `tool_get_token` | Generate a new API access token. The new token is valid for 10 minutes and invalidates any previous token. Returns the new token to the LLM. |
 
 Example tool call by LLM will automatically execute the tool and return results to the LLM for final response synthesis.
+
+## Serial CLI
+
+Interactive serial console is enabled with these commands:
+
+- `get_token` - Generate a new API token and print it. New token is valid for 10 minutes.
 
 ## cURL Examples
 
 Send a message:
 
 ```bash
-curl -X POST "http://<device_ip>/message/send?token=<token>" \
+curl -X POST "http://<device_ip>/message/send" \
 	-H "Content-Type: application/json" \
 	-d '{
 		"jsonrpc":"2.0",
@@ -188,7 +196,7 @@ curl -X POST "http://<device_ip>/message/send?token=<token>" \
 Poll task status:
 
 ```bash
-curl -X POST "http://<device_ip>/tasks/get?token=<token>" \
+curl -X POST "http://<device_ip>/tasks/get" \
 	-H "Content-Type: application/json" \
 	-d '{
 		"jsonrpc":"2.0",
@@ -200,18 +208,29 @@ curl -X POST "http://<device_ip>/tasks/get?token=<token>" \
 
 ## Authentication
 
-If `CAM_API_TOKEN` is non-empty, requests must include either:
+Authentication is **not required** for these endpoints:
+- `POST /message/send` - JSON-RPC message send
+- `POST /tasks/get` - JSON-RPC task status poll
 
+Authentication **is required** for these endpoints:
+- `GET /stream` - MJPEG live stream
+- `GET /capture` - capture latest frame (JPEG)
+- `GET /capture_hr` - high-resolution still capture
+- `GET /get_th` - latest BLE BTHome reading as JSON
+
+Authentication token is **dynamic** and expires after **10 minutes**. You can get a fresh token in two ways:
+1. **Serial CLI**: Connect to the serial console and run `get_token` command. This will print a new token and show usage examples with your actual IP address.
+2. **LLM Tool**: The LLM can call `tool_get_token` to regenerate a new token and get it automatically.
+
+To authenticate, include either:
 - Header: `Authorization: Bearer <token>`
 - Query: `?token=<token>`
-
-If `CAM_API_TOKEN` is empty, authentication is disabled.
 
 Examples:
 
 ```bash
-curl -H "Authorization: Bearer <token>" http://<device_ip>/capture -o capture.jpg
-curl "http://<device_ip>/stream?token=<token>"
+curl -H "Authorization: Bearer <your-token>" http://<device_ip>/capture -o capture.jpg
+curl "http://<device_ip>/stream?token=<your-token>"
 ```
 
 ## BLE BTHome Listener
@@ -237,5 +256,5 @@ All configuration goes through [`main/config.h`](main/config.h):
 
 - `main/secrets.h` is ignored by git and should never be committed.
 - Camera pin mapping and quality/frame-size settings are in `main/camera_core/config.h`.
-- Default stream frame size is VGA, while `/capture_human` uses UXGA.
+- Default stream frame size is VGA, while `/capture_hr` uses UXGA.
 - Async task execution is handled by a dedicated FreeRTOS task spawned from `main.c`.

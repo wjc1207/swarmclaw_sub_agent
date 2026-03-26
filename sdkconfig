@@ -983,6 +983,12 @@ CONFIG_BT_ALARM_MAX_NUM=50
 # CONFIG_BLE_MESH is not set
 
 #
+# Console Library
+#
+# CONFIG_CONSOLE_SORTED_HELP is not set
+# end of Console Library
+
+#
 # Driver Configurations
 #
 

@@ -14,14 +14,6 @@
 #define WIFI_PASS ""
 #endif
 
-#ifndef CAM_API_TOKEN
-#define CAM_API_TOKEN ""
-#endif
-
-#ifndef LLM_API_BASE
-#define LLM_API_BASE ""
-#endif
-
 #ifndef LLM_API_KEY
 #define LLM_API_KEY ""
 #endif
@@ -29,3 +21,5 @@
 #ifndef LLM_MODEL
 #define LLM_MODEL ""
 #endif
+
+#define LLM_CHAT_PREV_LEN 256

@@ -14,6 +14,7 @@
 #include "a2a/task_manager.h"
 #include "a2a_http.h"
 #include "llm_chat.h"
+#include "cli/serial_cli.h"
 
 static const char *TAG = "camera_sta";
 static SemaphoreHandle_t s_task_executor_running = NULL;
@@ -88,4 +89,5 @@ void app_main(void)
 
     wifi_init_sta();
     a2a_http_start_server();
+    ESP_ERROR_CHECK(serial_cli_init());
 }

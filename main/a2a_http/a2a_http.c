@@ -23,6 +23,7 @@
 #include "tools/a2a_tools.h"
 
 #include "esp_timer.h"
+#include "esp_random.h"
 
 static const char *TAG = "a2a_http";
 static uint8_t *s_last_capture_jpg = NULL;
@@ -31,9 +32,44 @@ static size_t s_last_capture_jpg_len = 0;
 #define MSG_REQ_MAX_BYTES   4096
 #define MSG_RESP_MAX_BYTES  2048
 
+#define TOKEN_SIZE          64
+#define TOKEN_EXPIRY_MS     (10 * 60 * 1000)  // 10 minutes in milliseconds
+
+static char current_token[TOKEN_SIZE + 1] = {0};
+static uint64_t token_expiry_time = 0;
+
+static void generate_new_token(void)
+{
+    // Generate random token using ESP32 hardware random
+    uint8_t bytes[TOKEN_SIZE / 2];
+    for (int i = 0; i < sizeof(bytes); i++) {
+        bytes[i] = (uint8_t)(esp_random() & 0xFF);
+    }
+
+    // Convert to hex string
+    for (int i = 0; i < sizeof(bytes); i++) {
+        sprintf(&current_token[i * 2], "%02x", bytes[i]);
+    }
+    current_token[TOKEN_SIZE] = '\0';
+
+    // Set expiry time (10 minutes from now)
+    token_expiry_time = esp_timer_get_time() / 1000ULL + TOKEN_EXPIRY_MS;
+}
+
 static bool check_auth(httpd_req_t *req)
 {
-    const char *expected = CAM_API_TOKEN;
+    // If no token generated yet, initialize with random token
+    if (current_token[0] == '\0') {
+        generate_new_token();
+    }
+
+    // Check if token is expired - if expired, reject even if token is correct
+    uint64_t now_ms = esp_timer_get_time() / 1000ULL;
+    if (now_ms >= token_expiry_time) {
+        return false;
+    }
+
+    const char *expected = current_token;
     if (expected[0] == '\0') {
         return true;
     }
@@ -55,6 +91,17 @@ static bool check_auth(httpd_req_t *req)
     }
 
     return false;
+}
+
+// Export for tool use
+const char *a2a_http_get_current_token(void)
+{
+    return current_token;
+}
+
+void a2a_http_regenerate_token(void)
+{
+    generate_new_token();
 }
 
 static esp_err_t stream_handler(httpd_req_t *req)
@@ -261,12 +308,7 @@ static esp_err_t get_th_handler(httpd_req_t *req)
 
 static esp_err_t message_send_handler(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        httpd_resp_set_status(req, "401 Unauthorized");
-        httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer realm=\"camera\"");
-        httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
-        return ESP_FAIL;
-    }
+    // authentication removed per requirement
 
     if (req->content_len <= 0 || req->content_len > MSG_REQ_MAX_BYTES) {
         httpd_resp_set_type(req, "application/json");
@@ -313,56 +355,6 @@ static esp_err_t message_send_handler(httpd_req_t *req)
         }
         esp_err_t ret = httpd_resp_sendstr(req, parse_error_json);
         free(parse_error_json);
-        return ret;
-    }
-
-    if (strcmp(method, "tasks/get") == 0) {
-        const char *task_id = a2a_extract_task_id(params);
-        if (!task_id || task_id[0] == '\0') {
-            char *err = a2a_build_jsonrpc_error(id, -32602, "Invalid params", "task id is required");
-            cJSON_Delete(root);
-            free(payload);
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-            if (!err) {
-                return httpd_resp_sendstr(req,
-                    "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
-            }
-            esp_err_t ret = httpd_resp_sendstr(req, err);
-            free(err);
-            return ret;
-        }
-
-        const a2a_task_t *task = a2a_task_get(task_id);
-        if (!task) {
-            char *err = a2a_build_jsonrpc_error(id, -32004, "Task not found", task_id);
-            cJSON_Delete(root);
-            free(payload);
-            httpd_resp_set_type(req, "application/json");
-            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-            if (!err) {
-                return httpd_resp_sendstr(req,
-                    "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
-            }
-            esp_err_t ret = httpd_resp_sendstr(req, err);
-            free(err);
-            return ret;
-        }
-
-        char *resp_str = a2a_build_task_result(id, task);
-        cJSON_Delete(root);
-        free(payload);
-        httpd_resp_set_type(req, "application/json");
-        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
-        httpd_resp_set_hdr(req, "Pragma", "no-cache");
-        httpd_resp_set_hdr(req, "Expires", "0");
-        if (!resp_str) {
-            return httpd_resp_sendstr(req,
-                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":\"oom\"}}");
-        }
-        esp_err_t ret = httpd_resp_sendstr(req, resp_str);
-        free(resp_str);
         return ret;
     }
 
@@ -441,12 +433,7 @@ static esp_err_t message_send_handler(httpd_req_t *req)
 
 static esp_err_t tasks_get_handler(httpd_req_t *req)
 {
-    if (!check_auth(req)) {
-        httpd_resp_set_status(req, "401 Unauthorized");
-        httpd_resp_set_hdr(req, "WWW-Authenticate", "Bearer realm=\"camera\"");
-        httpd_resp_send(req, "Unauthorized", HTTPD_RESP_USE_STRLEN);
-        return ESP_FAIL;
-    }
+    // authentication removed per requirement
 
     if (req->content_len <= 0 || req->content_len > MSG_REQ_MAX_BYTES) {
         httpd_resp_set_type(req, "application/json");
@@ -566,7 +553,7 @@ static esp_err_t agent_well_known_handler(httpd_req_t *req)
         "\"endpoints\":{"
             "\"stream\":\"/stream\","
             "\"capture\":\"/capture\","
-            "\"capture_human\":\"/capture_human\","
+            "\"capture_hr\":\"/capture_hr\","
             "\"get_th\":\"/get_th\","
             "\"message_send\":\"/message/send\","
             "\"tasks_get\":\"/tasks/get\""
@@ -609,9 +596,10 @@ static esp_err_t agent_well_known_handler(httpd_req_t *req)
         "\"auth\":{"
             "\"type\":\"bearer_or_query_token\","
             "\"header\":\"Authorization: Bearer <token>\","
-            "\"query\":\"token=<token>\""
+            "\"query\":\"token=<token>\","
+            "\"description\":\"Authentication required for /stream, /capture, /capture_hr, /get_th. /message/send and /tasks/get do not require authentication. Token is dynamic and expires after 10 minutes. Regenerate via tool_get_token tool or serial CLI 'get_token' command.\""
         "},"
-        "\"tools\":[\"tool_ble\",\"tool_camera\"],"
+        "\"tools\":[\"tool_ble\",\"tool_camera\",\"tool_get_token\"],"
         "\"task_mode\":\"async\""
         "}";
 
