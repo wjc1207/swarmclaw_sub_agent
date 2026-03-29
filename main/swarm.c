@@ -16,7 +16,7 @@
 #include "llm_chat.h"
 #include "cli/serial_cli.h"
 
-static const char *TAG = "camera_sta";
+static const char *TAG = "swarm";
 static SemaphoreHandle_t s_task_executor_running = NULL;
 
 static void task_executor_thread(void *arg)

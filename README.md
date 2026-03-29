@@ -1,4 +1,4 @@
-# Swarmclaw Sub Agent (ESP32-S3 Camera + BLE + A2A Agent)
+# Swarmclaw Sense (ESP32-S3 Camera + BLE + A2A Agent)
 
 This project runs on ESP32-S3 and provides an A2A (Agent-to-Agent) compatible HTTP server with:
 

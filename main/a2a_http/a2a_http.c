@@ -546,9 +546,9 @@ static esp_err_t agent_well_known_handler(httpd_req_t *req)
 
     static const char *body =
         "{"
-        "\"schema_version\":\"a2a-sim-1\","
-        "\"id\":\"swarmclaw-sub-agent\","
-        "\"name\":\"SwarmClaw Sub Agent\","
+        "\"schema_version\":\"a2a-protocol-v1.0.0\","
+        "\"id\":\"swarmclaw-sense\","
+        "\"name\":\"SwarmClaw Sense\","
         "\"description\":\"ESP32 camera and BTHome edge agent for A2A agent-to-agent communication. All messages processed asynchronously by LLM with tool support.\","
         "\"endpoints\":{"
             "\"stream\":\"/stream\","

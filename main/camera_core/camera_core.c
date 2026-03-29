@@ -7,7 +7,7 @@
 
 #include "camera_config.h"
 
-static const char *TAG = "camera_sta";
+static const char *TAG = "camera";
 
 static camera_config_t s_camera_config = {
     .pin_pwdn = CAM_PIN_PWDN,

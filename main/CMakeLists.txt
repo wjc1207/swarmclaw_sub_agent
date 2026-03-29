@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c"
+    SRCS "swarm.c"
         "a2a/a2a_rpc.c"
         "a2a/task_manager.c"
         "ble/bthome_listener.c"

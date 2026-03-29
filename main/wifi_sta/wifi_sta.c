@@ -9,7 +9,7 @@
 #include "config.h"
 #include "a2a_http.h"
 
-static const char *TAG = "camera_sta";
+static const char *TAG = "wifi";
 
 static esp_ip4_addr_t s_sta_ip = {0};
 
