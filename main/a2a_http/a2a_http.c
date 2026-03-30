@@ -410,7 +410,33 @@ static esp_err_t message_send_handler(httpd_req_t *req)
         return ret;
     }
 
-    char *resp_str = a2a_build_task_result(id, task);
+    // Wait up to 10 seconds for task completion - short tasks return synchronously, long tasks remain async
+    uint64_t start_ms = esp_timer_get_time() / 1000ULL;
+    const a2a_task_t *updated_task = task;
+    while (true) {
+        uint64_t elapsed_ms = (esp_timer_get_time() / 1000ULL) - start_ms;
+        if (elapsed_ms >= A2A_SYNC_TIMEOUT_MS) {
+            // Timeout after 10s, return whatever we have
+            updated_task = a2a_task_get(task->id);
+            break;
+        }
+
+        updated_task = a2a_task_get(task->id);
+        if (!updated_task) {
+            break;
+        }
+
+        // If task is completed or failed, return immediately
+        if (strcmp(updated_task->state, A2A_TASK_STATE_COMPLETED) == 0 ||
+            strcmp(updated_task->state, A2A_TASK_STATE_FAILED) == 0) {
+            break;
+        }
+
+        // Wait a bit before checking again
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    char *resp_str = a2a_build_task_result(id, updated_task);
     cJSON_Delete(root);
     free(payload);
 
@@ -500,6 +526,8 @@ static esp_err_t tasks_get_handler(httpd_req_t *req)
             return ret;
         }
 
+        ESP_LOGI(TAG, "tasks/get received for task_id=%s", task_id);
+
         const a2a_task_t *task = a2a_task_get(task_id);
         if (!task) {
             char *err = a2a_build_jsonrpc_error(id, -32004, "Task not found", task_id);
@@ -561,7 +589,7 @@ static esp_err_t agent_well_known_handler(httpd_req_t *req)
         "\"usage\":{"
             "\"message/send\":{"
                 "\"method\":\"POST\","
-                "\"description\":\"Send a message to the agent for LLM processing. Returns immediately with a queued task ID.\","
+                "\"description\":\"Send a message to the agent for LLM processing. Waits up to 10 seconds - short tasks return result synchronously, long tasks return queued task ID for polling.\","
                 "\"request_params\":{"
                     "\"jsonrpc\":\"2.0\","
                     "\"id\":\"<request-id>\","
@@ -600,7 +628,7 @@ static esp_err_t agent_well_known_handler(httpd_req_t *req)
             "\"description\":\"Authentication required for /stream, /capture, /capture_hr, /get_th. /message/send and /tasks/get do not require authentication. Token is dynamic and expires after 10 minutes. Regenerate via tool_get_token tool or serial CLI 'get_token' command.\""
         "},"
         "\"tools\":[\"tool_ble\",\"tool_camera\",\"tool_get_token\"],"
-        "\"task_mode\":\"async\""
+        "\"task_mode\":\"hybrid_sync_async\""
         "}";
 
     return httpd_resp_sendstr(req, body);

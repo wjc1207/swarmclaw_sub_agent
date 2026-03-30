@@ -84,7 +84,7 @@ void app_main(void)
     // Spawn background task executor thread - created in main.c as requested
     if (!s_task_executor_running) {
         s_task_executor_running = xSemaphoreCreateBinary();
-        xTaskCreate(task_executor_thread, "task_executor", 8192, NULL, 3, NULL);
+        xTaskCreatePinnedToCore(task_executor_thread, "task_executor", 8192, NULL, 3, NULL, 1);
     }
 
     wifi_init_sta();

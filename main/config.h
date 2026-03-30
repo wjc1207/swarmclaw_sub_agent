@@ -22,4 +22,8 @@
 #define LLM_MODEL ""
 #endif
 
+// LLM
 #define LLM_CHAT_PREV_LEN 256
+
+// a2a
+#define A2A_SYNC_TIMEOUT_MS 5000
