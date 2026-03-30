@@ -13,6 +13,6 @@ esp_err_t camera_core_acquire_fb_latest(camera_fb_t **out_fb,
                                         TickType_t lock_timeout_ticks);
 void camera_core_release_fb(camera_fb_t *fb);
 
-esp_err_t camera_core_acquire_fb_human(camera_fb_t **out_fb,
+esp_err_t camera_core_acquire_fb_hr(camera_fb_t **out_fb,
                                        TickType_t lock_timeout_ticks);
-void camera_core_release_fb_human(camera_fb_t *fb);
+void camera_core_release_fb_hr(camera_fb_t *fb);

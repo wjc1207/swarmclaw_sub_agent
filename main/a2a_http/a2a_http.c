@@ -240,23 +240,23 @@ static esp_err_t capture_hr_handler(httpd_req_t *req)
     }
 
     camera_fb_t *fb = NULL;
-    esp_err_t acq = camera_core_acquire_fb_human(&fb, pdMS_TO_TICKS(2000));
+    esp_err_t acq = camera_core_acquire_fb_hr(&fb, pdMS_TO_TICKS(2000));
     if (acq != ESP_OK || fb == NULL) {
-        ESP_LOGE(TAG, "Human capture failed, err=0x%x", (unsigned int)acq);
+        ESP_LOGE(TAG, "HR capture failed, err=0x%x", (unsigned int)acq);
         httpd_resp_set_status(req, "503 Service Unavailable");
-        httpd_resp_send(req, "Human capture failed", HTTPD_RESP_USE_STRLEN);
+        httpd_resp_send(req, "HR capture failed", HTTPD_RESP_USE_STRLEN);
         return ESP_FAIL;
     }
 
     httpd_resp_set_type(req, "image/jpeg");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture_human.jpg");
+    httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture_hr.jpg");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
     httpd_resp_set_hdr(req, "Pragma", "no-cache");
     httpd_resp_set_hdr(req, "Expires", "0");
 
     esp_err_t res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
-    camera_core_release_fb_human(fb);
+    camera_core_release_fb_hr(fb);
     return res;
 }
 
@@ -359,7 +359,7 @@ static esp_err_t message_send_handler(httpd_req_t *req)
     }
 
     if (strcmp(method, "message/send") != 0) {
-        char *err = a2a_build_jsonrpc_error(id, -32601, "Method not found", "supported: message/send, tasks/get");
+        char *err = a2a_build_jsonrpc_error(id, -32601, "Method not found", "supported: message/send");
         cJSON_Delete(root);
         free(payload);
         httpd_resp_set_type(req, "application/json");
@@ -564,6 +564,144 @@ static esp_err_t tasks_get_handler(httpd_req_t *req)
         "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32601,\"message\":\"Method not found\",\"data\":\"supported: tasks/get\"}}");
 }
 
+static esp_err_t tasks_cancel_handler(httpd_req_t *req)
+{
+    // authentication removed per requirement
+
+    if (req->content_len <= 0 || req->content_len > MSG_REQ_MAX_BYTES) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_sendstr(req, "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"Invalid Request\",\"data\":\"invalid_body_length\"}}");
+    }
+
+    char *payload = (char *)calloc(1, req->content_len + 1);
+    if (!payload) {
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        return httpd_resp_sendstr(req,
+            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":\"oom\"}}");
+    }
+
+    int received = 0;
+    while (received < req->content_len) {
+        int ret = httpd_req_recv(req, payload + received, req->content_len - received);
+        if (ret <= 0) {
+            free(payload);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":\"recv_failed\"}}");
+        }
+        received += ret;
+    }
+
+    cJSON *root = NULL;
+    cJSON *id = NULL;
+    const char *method = NULL;
+    cJSON *params = NULL;
+    char *parse_error_json = NULL;
+    if (!a2a_parse_rpc_request(payload, &root, &id, &method, &params, &parse_error_json)) {
+        free(payload);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        if (!parse_error_json) {
+            parse_error_json = a2a_build_jsonrpc_error(NULL, -32603, "Internal error", "oom");
+        }
+        if (!parse_error_json) {
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+        }
+        esp_err_t ret = httpd_resp_sendstr(req, parse_error_json);
+        free(parse_error_json);
+        return ret;
+    }
+
+    if (strcmp(method, "tasks/cancel") != 0) {
+        char *err = a2a_build_jsonrpc_error(id, -32601, "Method not found", "supported: tasks/cancel");
+        cJSON_Delete(root);
+        free(payload);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        if (!err) {
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+        }
+        esp_err_t ret = httpd_resp_sendstr(req, err);
+        free(err);
+        return ret;
+    }
+
+    const char *task_id = a2a_extract_task_id(params);
+    if (!task_id || task_id[0] == '\0') {
+        char *err = a2a_build_jsonrpc_error(id, -32602, "Invalid params", "task id is required");
+        cJSON_Delete(root);
+        free(payload);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        if (!err) {
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+        }
+        esp_err_t ret = httpd_resp_sendstr(req, err);
+        free(err);
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "tasks/cancel received for task_id=%s", task_id);
+
+    const a2a_task_t *task = a2a_task_get(task_id);
+    if (!task) {
+        char *err = a2a_build_jsonrpc_error(id, -32004, "Task not found", task_id);
+        cJSON_Delete(root);
+        free(payload);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        if (!err) {
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+        }
+        esp_err_t ret = httpd_resp_sendstr(req, err);
+        free(err);
+        return ret;
+    }
+
+    bool canceled = a2a_task_cancel(task_id);
+    if (!canceled) {
+        char *err = a2a_build_jsonrpc_error(id, -32005, "Task cannot be canceled",
+            strcmp(task->state, A2A_TASK_STATE_COMPLETED) == 0 || strcmp(task->state, A2A_TASK_STATE_FAILED) == 0 ?
+            "Task already completed or failed" : "Task not in cancellable state");
+        cJSON_Delete(root);
+        free(payload);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        if (!err) {
+            return httpd_resp_sendstr(req,
+                "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}");
+        }
+        esp_err_t ret = httpd_resp_sendstr(req, err);
+        free(err);
+        return ret;
+    }
+
+    // Get updated task after cancellation and return
+    task = a2a_task_get(task_id);
+    char *resp_str = a2a_build_task_result(id, task);
+    cJSON_Delete(root);
+    free(payload);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
+    if (!resp_str) {
+        return httpd_resp_sendstr(req,
+            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32603,\"message\":\"Internal error\",\"data\":\"oom\"}}");
+    }
+    esp_err_t ret = httpd_resp_sendstr(req, resp_str);
+    free(resp_str);
+    return ret;
+}
+
 static esp_err_t agent_well_known_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
@@ -584,7 +722,8 @@ static esp_err_t agent_well_known_handler(httpd_req_t *req)
             "\"capture_hr\":\"/capture_hr\","
             "\"get_th\":\"/get_th\","
             "\"message_send\":\"/message/send\","
-            "\"tasks_get\":\"/tasks/get\""
+            "\"tasks_get\":\"/tasks/get\","
+            "\"tasks_cancel\":\"/tasks/cancel\""
         "},"
         "\"usage\":{"
             "\"message/send\":{"
@@ -612,20 +751,26 @@ static esp_err_t agent_well_known_handler(httpd_req_t *req)
                     "}"
                 "},"
                 "\"response\":\"Returns task object with current state and output if completed\""
-            "}"
-        "},"
-        "\"message_send_params\":{"
-            "\"type\":\"object\","
-            "\"properties\":{"
-                "\"message_text\":{\"type\":\"string\"}"
             "},"
-            "\"required\":[\"message_text\"]"
+            "\"tasks/cancel\":{"
+                "\"method\":\"POST\","
+                "\"description\":\"Cancel a queued or running task\","
+                "\"request_params\":{"
+                    "\"jsonrpc\":\"2.0\","
+                    "\"id\":\"<request-id>\","
+                    "\"method\":\"tasks/cancel\","
+                    "\"params\":{"
+                        "\"task_id\":\"<task-id-from-message-send>\""
+                    "}"
+                "},"
+                "\"response\":\"Returns updated task object with state 'canceled' on success\""
+            "}"
         "},"
         "\"auth\":{"
             "\"type\":\"bearer_or_query_token\","
             "\"header\":\"Authorization: Bearer <token>\","
             "\"query\":\"token=<token>\","
-            "\"description\":\"Authentication required for /stream, /capture, /capture_hr, /get_th. /message/send and /tasks/get do not require authentication. Token is dynamic and expires after 10 minutes. Regenerate via tool_get_token tool or serial CLI 'get_token' command.\""
+            "\"description\":\"Authentication required for /stream, /capture, /capture_hr, /get_th. /message/send, /tasks/get, and /tasks/cancel do not require authentication. Token is dynamic and expires after 10 minutes. Regenerate via tool_get_token tool or serial CLI 'get_token' command.\""
         "},"
         "\"tools\":[\"tool_ble\",\"tool_camera\",\"tool_get_token\"],"
         "\"task_mode\":\"hybrid_sync_async\""
@@ -638,6 +783,7 @@ void a2a_http_start_server(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.stack_size = 8192;
+    config.max_uri_handlers = 16;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {
@@ -688,6 +834,14 @@ void a2a_http_start_server(void)
             .user_ctx = NULL,
         };
         httpd_register_uri_handler(server, &tasks_get_uri);
+
+        httpd_uri_t tasks_cancel_uri = {
+            .uri = "/tasks/cancel",
+            .method = HTTP_POST,
+            .handler = tasks_cancel_handler,
+            .user_ctx = NULL,
+        };
+        httpd_register_uri_handler(server, &tasks_cancel_uri);
 
         httpd_uri_t well_known_agent_card_uri = {
             .uri = "/.well-known/agent-card.json",

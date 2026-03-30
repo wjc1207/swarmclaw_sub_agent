@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #define A2A_TASK_STATE_QUEUED      "queued"
 #define A2A_TASK_STATE_RUNNING     "running"
@@ -27,3 +28,5 @@ const a2a_task_t *a2a_task_get(const char *task_id);
 int a2a_task_update(const char *task_id, const char *state, const char *output);
 
 const a2a_task_t *a2a_task_find_next_queued(void);
+
+bool a2a_task_cancel(const char *task_id);

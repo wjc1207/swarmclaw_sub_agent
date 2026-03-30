@@ -159,6 +159,40 @@ Task states:
 - `running` - Currently executing
 - `completed` - Completed successfully, `output` has result
 - `failed` - Execution failed, `output` has error info
+- `canceled` - Canceled before completion
+
+#### `tasks/cancel` - Cancel a queued or running task
+
+**Request format:**
+```json
+{
+	"jsonrpc": "2.0",
+	"id": "cancel-1",
+	"method": "tasks/cancel",
+	"params": {
+		"task_id": "task-123456789-1"
+	}
+}
+```
+
+**Response (success):**
+```json
+{
+	"jsonrpc": "2.0",
+	"id": "cancel-1",
+	"result": {
+		"id": "task-123456789-1",
+		"state": "canceled",
+		"input": "...original input...",
+		"created_ms": 123456789,
+		"updated_ms": 123456792
+	}
+}
+```
+
+- Queued tasks: marked canceled and will never be picked up for execution
+- Running tasks: marked canceled but current execution will complete (no preemption)
+- Already completed or failed tasks: cannot be canceled
 
 ## Available Local Tools
 
@@ -206,11 +240,25 @@ curl -X POST "http://<device_ip>/tasks/get" \
 	}'
 ```
 
+Cancel a task:
+
+```bash
+curl -X POST "http://<device_ip>/tasks/cancel" \
+	-H "Content-Type: application/json" \
+	-d '{
+		"jsonrpc":"2.0",
+		"id":"cancel-1",
+		"method":"tasks/cancel",
+		"params":{"task_id":"task-1679123456789-1"}
+	}'
+```
+
 ## Authentication
 
 Authentication is **not required** for these endpoints:
 - `POST /message/send` - JSON-RPC message send
 - `POST /tasks/get` - JSON-RPC task status poll
+- `POST /tasks/cancel` - JSON-RPC task cancel
 
 Authentication **is required** for these endpoints:
 - `GET /stream` - MJPEG live stream

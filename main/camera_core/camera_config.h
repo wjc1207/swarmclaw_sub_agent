@@ -14,15 +14,15 @@
 #define CAMERA_CAPTURE_RETRY_COUNT 3
 #define CAMERA_CAPTURE_RETRY_DELAY_MS 30
 
-// Highest-resolution still capture (/capture_human)
-#define CAMERA_HUMAN_FRAME_SIZE FRAMESIZE_UXGA
-#define CAMERA_HUMAN_JPEG_QUALITY 8
-#define CAMERA_HUMAN_WARMUP_MS 120
-#define CAMERA_HUMAN_RETRY_COUNT 3
-#define CAMERA_HUMAN_RETRY_DELAY_MS 40
+// Highest-resolution still capture (/capture_hr)
+#define CAMERA_HR_FRAME_SIZE FRAMESIZE_UXGA
+#define CAMERA_HR_JPEG_QUALITY 8
+#define CAMERA_HR_WARMUP_MS 120
+#define CAMERA_HR_RETRY_COUNT 3
+#define CAMERA_HR_RETRY_DELAY_MS 40
 
 // Allocate camera buffers using the max capture size to avoid FB-OVF when switching
-#define CAMERA_INIT_FRAME_SIZE CAMERA_HUMAN_FRAME_SIZE
+#define CAMERA_INIT_FRAME_SIZE CAMERA_HR_FRAME_SIZE
 
 // Sensor tuning
 #define CAMERA_TUNE_BRIGHTNESS 0

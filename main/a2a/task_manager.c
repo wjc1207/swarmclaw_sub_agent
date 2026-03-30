@@ -153,3 +153,32 @@ const a2a_task_t *a2a_task_find_next_queued(void)
     xSemaphoreGive(s_task_mutex);
     return NULL;
 }
+
+bool a2a_task_cancel(const char *task_id)
+{
+    if (!task_id || task_id[0] == '\0' || !s_task_mutex) {
+        ESP_LOGE(TAG, "Invalid task ID or mutex");
+        return false;
+    }
+
+    xSemaphoreTake(s_task_mutex, portMAX_DELAY);
+
+    for (int i = 0; i < A2A_TASK_CAPACITY; i++) {
+        if (s_tasks[i].id[0] != '\0' && strcmp(s_tasks[i].id, task_id) == 0) {
+            // Only allow canceling queued or running tasks
+            if (strcmp(s_tasks[i].state, A2A_TASK_STATE_QUEUED) == 0 ||
+                strcmp(s_tasks[i].state, A2A_TASK_STATE_RUNNING) == 0) {
+                strlcpy(s_tasks[i].state, "canceled", sizeof(s_tasks[i].state));
+                s_tasks[i].updated_ms = (uint64_t)(esp_timer_get_time() / 1000ULL);
+                xSemaphoreGive(s_task_mutex);
+                return true;
+            }
+            // Already completed/failed - can't cancel
+            xSemaphoreGive(s_task_mutex);
+            return false;
+        }
+    }
+
+    xSemaphoreGive(s_task_mutex);
+    return false;
+}
