@@ -41,7 +41,7 @@ main/
 - need BLE OTA firmware update to BTHome broadcast
 - https://pvvx.github.io/ATC_MiThermometer/TelinkMiFlasher.html
 - Wi-Fi: Connects to configured SSID on boot
-- Framework: ESP-IDF
+- Framework: ESP-IDF v5.5
 
 ## Quick Start
 
