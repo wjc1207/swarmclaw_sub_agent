@@ -26,6 +26,7 @@ idf_component_register(
         esp_http_server
         esp_http_client
         esp-tls
+        mbedtls
         json
         esp_psram
         esp32-camera

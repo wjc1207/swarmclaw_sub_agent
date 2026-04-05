@@ -79,10 +79,8 @@ http://<device_ip>
 
 Camera routes:
 
-- `GET /stream`: MJPEG live stream
 - `GET /capture`: capture latest frame (JPEG)
 - `GET /snapshot`: return cached last `/capture` image
-- `GET /capture_hr`: high-resolution still capture
 - `GET /get_th`: latest BLE BTHome reading as JSON
 
 ## A2A Agent (JSON-RPC 2.0)
@@ -261,9 +259,7 @@ Authentication is **not required** for these endpoints:
 - `POST /tasks/cancel` - JSON-RPC task cancel
 
 Authentication **is required** for these endpoints:
-- `GET /stream` - MJPEG live stream
 - `GET /capture` - capture latest frame (JPEG)
-- `GET /capture_hr` - high-resolution still capture
 - `GET /get_th` - latest BLE BTHome reading as JSON
 
 Authentication token is **dynamic** and expires after **10 minutes**. You can get a fresh token in two ways:
@@ -278,7 +274,6 @@ Examples:
 
 ```bash
 curl -H "Authorization: Bearer <your-token>" http://<device_ip>/capture -o capture.jpg
-curl "http://<device_ip>/stream?token=<your-token>"
 ```
 
 ## BLE BTHome Listener
@@ -304,5 +299,4 @@ All configuration goes through [`main/config.h`](main/config.h):
 
 - `main/secrets.h` is ignored by git and should never be committed.
 - Camera pin mapping and quality/frame-size settings are in `main/camera_core/config.h`.
-- Default stream frame size is VGA, while `/capture_hr` uses UXGA.
 - Async task execution is handled by a dedicated FreeRTOS task spawned from `main.c`.

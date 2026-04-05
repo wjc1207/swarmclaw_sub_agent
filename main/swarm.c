@@ -64,6 +64,13 @@ static void task_executor_thread(void *arg)
 
 void app_main(void)
 {
+    /* Silence noisy components */
+    esp_log_level_set("esp-x509-crt-bundle", ESP_LOG_WARN);
+
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "  Swarmclaw Sense - ESP32-S3 AI Agent");
+    ESP_LOGI(TAG, "========================================");
+
     ESP_ERROR_CHECK(nvs_flash_init());
 
     size_t psram_size = esp_psram_get_size();
